@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X32 Channel Monitor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a3a;
+    --text: #e8e8f0;
+    --muted: #6a6a8a;
+    --green: #00ff88;
+    --yellow: #ffd700;
+    --red: #ff4060;
+    --blue: #4488ff;
+    --grid-h: 220px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-icon {
+    width: 36px; height: 36px;
+    background: var(--blue);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 13px;
+    color: #fff;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+  }
+
+  .subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    margin-top: 2px;
+  }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  .status-dot.connected { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .status-dot.error     { background: var(--red); }
+
+  #status-text { color: var(--muted); }
+
+  .channels-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 10px;
+  }
+
+  .channel-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 8px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    transition: border-color 0.2s;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .channel-card.active {
+    border-color: var(--green);
+    box-shadow: 0 0 12px rgba(0,255,136,0.15);
+  }
+
+  .channel-card.clipping {
+    border-color: var(--red);
+    box-shadow: 0 0 12px rgba(255,64,96,0.2);
+  }
+
+  .ch-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    letter-spacing: 0.5px;
+  }
+
+  .ch-name {
+    font-size: 10px;
+    color: var(--text);
+    text-align: center;
+    width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: none;
+  }
+
+  .vu-wrap {
+    width: 36px;
+    height: var(--grid-h);
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column-reverse;
+  }
+
+  .vu-fill {
+    width: 100%;
+    height: 0%;
+    transition: height 0.05s linear;
+    border-radius: 2px;
+    background: linear-gradient(
+      to top,
+      var(--green) 0%,
+      var(--green) 60%,
+      var(--yellow) 75%,
+      var(--red) 90%
+    );
+  }
+
+  /* 눈금선 */
+  .vu-ticks {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+  .vu-ticks span {
+    position: absolute;
+    right: -24px;
+    width: 20px;
+    font-size: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+    transform: translateY(-50%);
+    text-align: right;
+  }
+  .vu-ticks::before {
+    content: '';
+    position: absolute;
+    top: 10%;
+    left: 0; right: 0;
+    height: 1px;
+    background: rgba(255,64,96,0.3);
+  }
+
+  .vu-db {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+    min-height: 14px;
+    transition: color 0.2s;
+  }
+
+  .channel-card.active   .vu-db { color: var(--green); }
+  .channel-card.clipping .vu-db { color: var(--red); }
+  .channel-card.active   .ch-label { color: var(--text); }
+
+  /* 이름 편집 모달 */
+  .modal-bg {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-bg.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    width: 300px;
+  }
+
+  .modal h3 { font-size: 15px; margin-bottom: 16px; }
+
+  .modal input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    outline: none;
+    margin-bottom: 16px;
+  }
+  .modal input:focus { border-color: var(--blue); }
+
+  .modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
+
+  .btn {
+    padding: 8px 16px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text);
+    transition: background 0.15s;
+  }
+  .btn:hover { background: var(--surface2); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { opacity: 0.85; }
+
+  .footer {
+    margin-top: 20px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+
+  .legend {
+    display: flex; gap: 16px; align-items: center;
+    margin-bottom: 16px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+  }
+  .legend span { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">X32</div>
+    <div>
+      <h1>Channel Monitor</h1>
+      <div class="subtitle">Behringer X32 · USB Audio</div>
+    </div>
+  </div>
+  <div class="status-bar">
+    <div class="status-dot" id="dot"></div>
+    <span id="status-text">연결 중...</span>
+  </div>
+</header>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--green)"></span> 신호 있음</span>
+  <span><span class="dot" style="background:var(--yellow)"></span> 주의</span>
+  <span><span class="dot" style="background:var(--red)"></span> 클리핑</span>
+  <span style="margin-left:auto; color:var(--muted)">채널 클릭 → 이름 편집</span>
+</div>
+
+<div class="channels-grid" id="grid"></div>
+
+<div class="footer">
+  <span>ws://localhost:8765</span>
+  <span id="fps-display">— fps</span>
+  <span id="peak-display"></span>
+</div>
+
+<!-- 이름 편집 모달 -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h3 id="modal-title">채널 이름 편집</h3>
+    <input type="text" id="modal-input" placeholder="예: 보컬, 기타, 드럼..." maxlength="12">
+    <div class="modal-btns">
+      <button class="btn" onclick="closeModal()">취소</button>
+      <button class="btn primary" onclick="saveName()">저장</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const WS_URL = 'ws://localhost:8765';
+const THRESHOLD_ACTIVE  = 0.002;
+const THRESHOLD_CLIP    = 0.9;
+
+let numChannels = 32;
+let cards = [];
+let fills = [];
+let dbLabels = [];
+let names = JSON.parse(localStorage.getItem('x32_names') || '{}');
+let editingIdx = null;
+let lastFrameTime = Date.now();
+let frameCount = 0;
+
+function rmsToDb(rms) {
+  if (rms < 0.000001) return -Infinity;
+  return 20 * Math.log10(rms);
+}
+
+function dbToPercent(db) {
+  // -60dB → 0%, 0dB → 100%
+  return Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+}
+
+function buildGrid(n) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  cards = []; fills = []; dbLabels = [];
+
+  for (let i = 0; i < n; i++) {
+    const card = document.createElement('div');
+    card.className = 'channel-card';
+    card.onclick = () => openModal(i);
+
+    const label = document.createElement('div');
+    label.className = 'ch-label';
+    label.textContent = `CH ${i + 1}`;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ch-name';
+    nameEl.id = `name-${i}`;
+    nameEl.textContent = names[i] || '';
+    if (names[i]) nameEl.style.display = 'block';
+
+    const vuWrap = document.createElement('div');
+    vuWrap.className = 'vu-wrap';
+
+    const fill = document.createElement('div');
+    fill.className = 'vu-fill';
+
+    vuWrap.appendChild(fill);
+
+    const dbLabel = document.createElement('div');
+    dbLabel.className = 'vu-db';
+    dbLabel.textContent = '—';
+
+    card.append(label, nameEl, vuWrap, dbLabel);
+    grid.appendChild(card);
+
+    cards.push(card);
+    fills.push(fill);
+    dbLabels.push(dbLabel);
+  }
+}
+
+function updateChannels(levels) {
+  levels.forEach((rms, i) => {
+    if (i >= cards.length) return;
+    const db = rmsToDb(rms);
+    const pct = dbToPercent(db);
+
+    fills[i].style.height = pct + '%';
+
+    const isActive   = rms > THRESHOLD_ACTIVE;
+    const isClipping = rms > THRESHOLD_CLIP;
+
+    cards[i].classList.toggle('active',   isActive && !isClipping);
+    cards[i].classList.toggle('clipping', isClipping);
+
+    dbLabels[i].textContent = isFinite(db)
+      ? (db >= 0 ? '+' : '') + db.toFixed(1) + ' dB'
+      : '—';
+  });
+
+  // FPS
+  frameCount++;
+  const now = Date.now();
+  if (now - lastFrameTime >= 1000) {
+    document.getElementById('fps-display').textContent = frameCount + ' fps';
+    frameCount = 0;
+    lastFrameTime = now;
+  }
+
+  // Peak channel
+  const maxIdx = levels.indexOf(Math.max(...levels));
+  const maxDb  = rmsToDb(levels[maxIdx]);
+  if (isFinite(maxDb)) {
+    const nm = names[maxIdx] ? `${names[maxIdx]} ` : '';
+    document.getElementById('peak-display').textContent =
+      `PEAK: CH${maxIdx+1} ${nm}${maxDb.toFixed(1)}dB`;
+  }
+}
+
+// WebSocket
+function connect() {
+  const dot  = document.getElementById('dot');
+  const text = document.getElementById('status-text');
+  const ws   = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    dot.className  = 'status-dot connected';
+    text.textContent = '연결됨';
+  };
+
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.channels !== numChannels) {
+      numChannels = data.channels;
+      buildGrid(numChannels);
+    }
+    updateChannels(data.levels);
+  };
+
+  ws.onclose = () => {
+    dot.className  = 'status-dot error';
+    text.textContent = '연결 끊김 — 재시도 중...';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {
+    dot.className  = 'status-dot error';
+    text.textContent = 'Python 서버를 먼저 실행해주세요';
+  };
+}
+
+// 이름 편집
+function openModal(idx) {
+  editingIdx = idx;
+  document.getElementById('modal-title').textContent = `CH ${idx+1} 이름 편집`;
+  document.getElementById('modal-input').value = names[idx] || '';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('modal-input').focus(), 50);
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+  editingIdx = null;
+}
+
+function saveName() {
+  const val = document.getElementById('modal-input').value.trim();
+  if (editingIdx !== null) {
+    names[editingIdx] = val;
+    localStorage.setItem('x32_names', JSON.stringify(names));
+    const el = document.getElementById(`name-${editingIdx}`);
+    el.textContent = val;
+    el.style.display = val ? 'block' : 'none';
+  }
+  closeModal();
+}
+
+document.getElementById('modal-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') saveName();
+  if (e.key === 'Escape') closeModal();
+});
+
+document.getElementById('modal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('modal')) closeModal();
+});
+
+buildGrid(numChannels);
+connect();
+</script>
+</body>
+</html>

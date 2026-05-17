@@ -1,0 +1,1188 @@
+// ── State ──────────────────────────────────────────────────────────
+const state = {
+  config: null,
+  ws: null,
+  lastTick: null,
+  fps: { count: 0, t0: Date.now() },
+  // Per-channel live-dB cells in the Channels tab. Index = channel id - 1.
+  // Each entry: { wrap, bar, value }. Cleared & rebuilt when the table is rerendered.
+  channelLiveDb: [],
+};
+
+const THRESHOLD_CLIP_RMS = 0.9;
+
+// Curated palette: 10 vibrant colors that read well on the dark theme,
+// chosen for hue separation so groups stay visually distinguishable.
+// Used for group-color swatches in the Groups tab.
+const GROUP_COLOR_PALETTE = [
+  '#26d68b', // mint
+  '#3b8bff', // azure
+  '#ffb633', // amber
+  '#ff5577', // coral
+  '#9b5cff', // violet
+  '#ff7a26', // tangerine
+  '#22cdd4', // cyan
+  '#ff5cb0', // rose
+  '#a8e63a', // chartreuse
+  '#00bd9b', // emerald
+];
+
+function renderColorPalette(currentColor, onSelect) {
+  const wrap = document.createElement('div');
+  wrap.className = 'color-palette';
+  const cur = (currentColor || '').toLowerCase();
+  for (const c of GROUP_COLOR_PALETTE) {
+    const sw = document.createElement('button');
+    sw.type = 'button';
+    sw.className = 'color-swatch' + (c.toLowerCase() === cur ? ' selected' : '');
+    sw.style.background = c;
+    sw.title = c;
+    sw.addEventListener('click', () => onSelect(c));
+    wrap.appendChild(sw);
+  }
+  return wrap;
+}
+
+// ── Boot ───────────────────────────────────────────────────────────
+async function boot() {
+  await loadConfig();
+  buildMonitor();
+  buildChannelsTable();
+  buildGroups();
+  buildRules();
+  buildConnections();
+  bindTabs();
+  bindGroupAdd();
+  bindRuntimeToggles();
+  bindAddRule();
+  bindConnectionsForm();
+  renderRuntimeToggles();
+  connectWS();
+}
+
+async function loadConfig() {
+  const res = await fetch('/api/config');
+  state.config = await res.json();
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────
+function bindTabs() {
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('tab-disabled')) return;
+      const target = btn.dataset.tab;
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
+      document.querySelectorAll('main > .panel').forEach(p => {
+        p.classList.toggle('hidden', p.id !== `panel-${target}`);
+      });
+    });
+  });
+}
+
+// ── Monitor ───────────────────────────────────────────────────────
+let monitorCards = [];
+
+function buildMonitor() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  monitorCards = [];
+
+  state.config.channels.forEach(ch => {
+    const card = document.createElement('div');
+    card.className = 'channel-card';
+
+    const label = document.createElement('div');
+    label.className = 'ch-label';
+    label.textContent = `CH${String(ch.id).padStart(2, '0')}`;
+
+    const name = document.createElement('div');
+    name.className = 'ch-name';
+    name.textContent = ch.name || '';
+
+    const groupTag = document.createElement('div');
+    groupTag.className = 'ch-group-tag';
+    if (ch.group) {
+      groupTag.textContent = ch.group;
+      const color = state.config.groups[ch.group]?.color;
+      if (color) groupTag.style.color = color;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'vu-wrap';
+    const fill = document.createElement('div');
+    fill.className = 'vu-fill';
+    wrap.appendChild(fill);
+
+    const dbEl = document.createElement('div');
+    dbEl.className = 'vu-db';
+    dbEl.textContent = '—';
+
+    card.append(label, name, groupTag, wrap, dbEl);
+    grid.appendChild(card);
+
+    monitorCards.push({ card, fill, dbEl, id: ch.id });
+  });
+}
+
+function rmsToDb(rms) {
+  if (rms < 1e-7) return -Infinity;
+  return 20 * Math.log10(rms);
+}
+function dbToPercent(db) {
+  return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+}
+
+// Always 1 decimal place (e.g., -30.0, -8.5, +0.0). Falsy/non-finite → "—".
+function formatDb(db) {
+  if (db == null || !isFinite(db)) return '—';
+  const sign = db >= 0 ? '+' : '';
+  return sign + db.toFixed(1);
+}
+
+function renderMonitorTick(msg) {
+  msg.levels.forEach((rms, i) => {
+    if (i >= monitorCards.length) return;
+    const { card, fill, dbEl } = monitorCards[i];
+    const db = rmsToDb(rms);
+    fill.style.height = dbToPercent(db) + '%';
+    const isClipping = rms > THRESHOLD_CLIP_RMS;
+    const chCfg = state.config.channels[i];
+    const thr = chCfg ? chCfg.threshold_db : -45;
+    const isActive = isFinite(db) && db >= thr;
+    card.classList.toggle('active', isActive && !isClipping);
+    card.classList.toggle('clipping', isClipping);
+    dbEl.textContent = formatDb(db);
+  });
+
+  // FPS
+  state.fps.count++;
+  const now = Date.now();
+  if (now - state.fps.t0 >= 1000) {
+    document.getElementById('fps-display').textContent = state.fps.count + ' fps';
+    state.fps.count = 0;
+    state.fps.t0 = now;
+  }
+
+  // Peak
+  let maxIdx = 0, maxVal = -Infinity;
+  msg.levels.forEach((v, i) => {
+    const db = rmsToDb(v);
+    if (db > maxVal) { maxVal = db; maxIdx = i; }
+  });
+  if (isFinite(maxVal)) {
+    const ch = state.config.channels[maxIdx];
+    const nm = ch?.name ? `${ch.name} ` : '';
+    document.getElementById('peak-display').textContent =
+      `PEAK · CH${maxIdx + 1} ${nm}${formatDb(maxVal)} dB`;
+  }
+
+  renderGroupPills(msg.groups || {});
+  renderModePill(msg.status || {});
+  renderChannelsLiveDb(msg.levels);
+  applyLiveGroupsToCondPills(msg.groups || {});
+}
+
+// Render the cuesheet: live mini-monitor (group activity + mode) above
+// the priority-ordered queue of matching rules.
+function renderCueSheet(msg) {
+  renderCueMiniMonitor(msg.groups || {}, msg.status || {});
+  renderCueQueue(msg.engine || {});
+}
+
+function renderCueMiniMonitor(groups, audioStatus) {
+  const root = document.getElementById('cs-mini-mon');
+  if (!root) return;
+  const groupNames = Object.keys(state.config.groups || {});
+  const rt = state.config.runtime || { auto: true, dry_run: true };
+
+  const parts = [];
+
+  // Group pills with peak dB
+  for (const name of groupNames) {
+    const g = groups[name];
+    const active = !!g?.active;
+    const peak = (g?.peak_db != null && isFinite(g.peak_db))
+      ? formatDb(g.peak_db) + ' dB'
+      : '—';
+    parts.push(
+      `<span class="cs-mini-group ${active ? 'active' : ''}">
+         <span class="mg-dot"></span>
+         <span class="mg-name">${escapeHtml(name)}</span>
+         <span class="mg-peak">${peak}</span>
+       </span>`
+    );
+  }
+
+  if (groupNames.length) parts.push('<span class="cs-mini-divider"></span>');
+
+  // AUTO / DRY status — at-a-glance reminder while editing rules
+  parts.push(
+    `<span class="cs-mini-mode">
+       <span class="cs-mini-mode-pill mode-${rt.auto ? 'auto' : 'manual'}">${rt.auto ? 'AUTO' : 'MANUAL'}</span>
+       <span class="cs-mini-mode-pill mode-${rt.dry_run ? 'dry' : 'live'}">${rt.dry_run ? 'DRY' : 'LIVE'}</span>
+     </span>`
+  );
+
+  // Audio mode (LIVE / DEMO) — only show if relevant (not idle)
+  if (audioStatus && audioStatus.mode && audioStatus.mode !== 'idle') {
+    parts.push('<span class="cs-mini-divider"></span>');
+    parts.push(
+      `<span class="cs-mini-obs">
+         <span>Audio · ${escapeHtml(audioStatus.mode.toUpperCase())}</span>
+       </span>`
+    );
+  }
+
+  root.innerHTML = parts.join('');
+}
+
+function renderCueQueue(engine) {
+  const root = document.getElementById('cs-queue');
+  if (!root) return;
+  const matching = engine.matching || [];
+
+  if (matching.length === 0) {
+    root.innerHTML = '<div class="cs-queue-empty">— 매칭되는 룰 없음 —</div>';
+    return;
+  }
+
+  root.innerHTML = '';
+  matching.forEach((m, idx) => {
+    const row = document.createElement('div');
+    let cls = 'mq-row';
+    let tag;
+    if (m.is_active) {
+      cls += ' mq-now';     tag = 'NOW';
+    } else if (idx === 0 || (idx === 1 && matching[0].is_active)) {
+      cls += ' mq-next';    tag = 'NEXT';
+    } else {
+      cls += ' mq-queued';  tag = '…';
+    }
+    row.className = cls;
+
+    const cdMeta = (m.is_active && engine.active_cooldown_remaining != null && engine.active_cooldown_remaining > 0)
+      ? `cd ${engine.active_cooldown_remaining.toFixed(1)}s`
+      : '';
+
+    row.innerHTML = `
+      <span class="mq-tag">${tag}</span>
+      <span class="mq-priority">P${m.priority}</span>
+      <span class="mq-name" data-rule-id="${m.id}" title="클릭해서 해당 룰로 스크롤">${escapeHtml(m.name || '')}</span>
+      <span class="mq-preview" title="${escapeHtml(m.preview || '')}">${escapeHtml(m.preview || '')}</span>
+      <span class="mq-meta">${cdMeta}</span>
+    `;
+
+    row.querySelector('.mq-name').addEventListener('click', () => {
+      const card = document.querySelector(`.rule-card[data-rule-id="${m.id}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.style.transition = 'box-shadow 0.4s';
+        card.style.boxShadow = '0 0 0 2px var(--blue)';
+        setTimeout(() => { card.style.boxShadow = ''; }, 800);
+      }
+    });
+
+    root.appendChild(row);
+  });
+}
+
+// Toggle the .cp-live class on existing rule-card condition pills based on
+// current group activity. Avoids a full rule-card rebuild every tick.
+function applyLiveGroupsToCondPills(groups) {
+  state.liveGroupState = groups;
+  document.querySelectorAll('.rule-card .cond-pill').forEach(pill => {
+    const g = pill.dataset.group;
+    if (!g) return;
+    pill.classList.toggle('cp-live', !!groups[g]?.active);
+  });
+}
+
+function renderChannelsLiveDb(levels) {
+  if (!state.channelLiveDb.length) return;  // Channels tab not yet rendered
+  for (let i = 0; i < levels.length && i < state.channelLiveDb.length; i++) {
+    const refs = state.channelLiveDb[i];
+    if (!refs) continue;
+    const rms = levels[i];
+    const db = rmsToDb(rms);
+    refs.value.textContent = formatDb(db);
+    refs.bar.style.width = dbToPercent(db) + '%';
+    const chCfg = state.config.channels[i];
+    const thr = chCfg ? chCfg.threshold_db : -45;
+    const isClipping = rms > THRESHOLD_CLIP_RMS;
+    const over = isFinite(db) && db >= thr;
+    refs.wrap.classList.toggle('over', over && !isClipping);
+    refs.wrap.classList.toggle('clipping', isClipping);
+  }
+}
+
+function renderModePill(status) {
+  const pill = document.getElementById('mode-pill');
+  const mode = status.mode || 'idle';
+  pill.className = 'mode-pill mode-' + mode;
+  pill.textContent = mode.toUpperCase();
+  pill.title = status.error || status.device || '';
+}
+
+function renderGroupPills(groups) {
+  const wrap = document.getElementById('group-pills');
+  const names = Object.keys(state.config.groups);
+  // Build once; update classes/text inline
+  if (wrap.childElementCount !== names.length) {
+    wrap.innerHTML = '';
+    names.forEach(name => {
+      const el = document.createElement('div');
+      el.className = 'group-pill';
+      el.dataset.group = name;
+      const dot = document.createElement('span');
+      dot.className = 'pill-dot';
+      const label = document.createElement('span');
+      label.className = 'pill-label';
+      label.textContent = name;
+      const meta = document.createElement('span');
+      meta.className = 'pill-meta';
+      el.append(dot, label, meta);
+      wrap.appendChild(el);
+    });
+  }
+  names.forEach(name => {
+    const el = wrap.querySelector(`[data-group="${name}"]`);
+    if (!el) return;
+    const g = groups[name];
+    const active = g?.active;
+    el.classList.toggle('active', !!active);
+    const dot = el.querySelector('.pill-dot');
+    const color = state.config.groups[name]?.color;
+    if (color) dot.style.background = active ? color : '';
+    el.querySelector('.pill-meta').textContent =
+      g ? `· ${g.member_count}ch · ${formatDb(g.peak_db)} dB` : '';
+  });
+}
+
+// ── Channels table ────────────────────────────────────────────────
+function buildChannelsTable() {
+  const root = document.getElementById('channels-table');
+  root.innerHTML = '';
+  state.channelLiveDb = [];
+  const groupNames = Object.keys(state.config.groups);
+
+  state.config.channels.forEach(ch => {
+    const row = document.createElement('div');
+    row.className = 'channel-row';
+
+    const num = document.createElement('div');
+    num.className = 'ch-num';
+    num.textContent = `CH ${ch.id}`;
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = '채널 이름 (예: 보컬 메인)';
+    nameInput.value = ch.name || '';
+    nameInput.addEventListener('change', () => patchChannel(ch.id, { name: nameInput.value }));
+
+    const groupSel = document.createElement('select');
+    const optNone = document.createElement('option');
+    optNone.value = '__none__';
+    optNone.textContent = '— 그룹 없음 —';
+    groupSel.appendChild(optNone);
+    groupNames.forEach(g => {
+      const o = document.createElement('option');
+      o.value = g;
+      o.textContent = g;
+      groupSel.appendChild(o);
+    });
+    groupSel.value = ch.group || '__none__';
+    groupSel.addEventListener('change', () => {
+      if (groupSel.value === '__none__') {
+        patchChannel(ch.id, { clear_group: true });
+      } else {
+        patchChannel(ch.id, { group: groupSel.value });
+      }
+    });
+
+    const thrCell = document.createElement('div');
+    thrCell.className = 'threshold-cell';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '-80';
+    slider.max = '0';
+    slider.step = '1';
+    slider.value = ch.threshold_db ?? -45;
+    const readout = document.createElement('div');
+    readout.className = 'db-readout';
+    const renderReadout = () => {
+      readout.textContent = `${formatDb(parseFloat(slider.value))} dB`;
+    };
+    renderReadout();
+    slider.addEventListener('input', renderReadout);
+    slider.addEventListener('change', () => {
+      patchChannel(ch.id, { threshold_db: parseFloat(slider.value) });
+    });
+    thrCell.append(slider, readout);
+
+    // Live-dB cell — updated on every WS tick from renderMonitorTick().
+    const live = document.createElement('div');
+    live.className = 'live-db';
+    const bar = document.createElement('div');
+    bar.className = 'live-db-bar';
+    const barFill = document.createElement('span');
+    bar.appendChild(barFill);
+    const liveValue = document.createElement('span');
+    liveValue.className = 'live-db-value';
+    liveValue.textContent = '—';
+    live.append(bar, liveValue);
+    state.channelLiveDb[ch.id - 1] = { wrap: live, bar: barFill, value: liveValue };
+
+    row.append(num, nameInput, groupSel, thrCell, live);
+    root.appendChild(row);
+  });
+}
+
+async function patchChannel(id, body) {
+  const res = await fetch(`/api/channels/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    console.error('patchChannel failed', await res.text());
+    return;
+  }
+  state.config = await res.json();
+  // Refresh dependent views
+  buildMonitor();
+}
+
+// ── Groups ────────────────────────────────────────────────────────
+function buildGroups() {
+  const grid = document.getElementById('groups-grid');
+  grid.innerHTML = '';
+  const groups = state.config.groups;
+  const memberCounts = {};
+  Object.keys(groups).forEach(g => memberCounts[g] = 0);
+  state.config.channels.forEach(c => {
+    if (c.group && memberCounts[c.group] !== undefined) memberCounts[c.group]++;
+  });
+
+  Object.entries(groups).forEach(([name, g]) => {
+    const card = document.createElement('div');
+    card.className = 'group-card';
+
+    const header = document.createElement('div');
+    header.className = 'group-card-header';
+    const title = document.createElement('div');
+    title.className = 'group-card-title';
+
+    // Current-color dot — read-only indicator. Choice is made by clicking
+    // a swatch in the palette row below.
+    const dot = document.createElement('span');
+    dot.className = 'group-color-dot';
+    dot.style.background = g.color || '#888';
+
+    const titleText = document.createElement('span');
+    titleText.textContent = name;
+    title.append(dot, titleText);
+    const meta = document.createElement('div');
+    meta.className = 'group-card-meta';
+    meta.textContent = `${memberCounts[name]} 채널`;
+    header.append(title, meta);
+
+    // Color palette — replaces the legacy native <input type="color"> with a
+    // curated 10-swatch row for visual consistency.
+    const paletteRow = document.createElement('div');
+    paletteRow.className = 'group-palette-row';
+    paletteRow.appendChild(renderColorPalette(g.color, async (newColor) => {
+      await upsertGroup(name, { color: newColor });
+      await loadConfig();
+      buildGroups();        // re-render palette selected state
+      buildMonitor();       // group pill colors
+      buildChannelsTable(); // channel group-tag colors
+    }));
+
+    const attackRow = makeSliderRow('Attack', 'attack_ms', g.attack_ms ?? 200, 0, 2000, 10);
+    const releaseRow = makeSliderRow('Release', 'release_ms', g.release_ms ?? 1000, 0, 5000, 50);
+
+    attackRow.input.addEventListener('change', () => {
+      upsertGroup(name, { attack_ms: parseFloat(attackRow.input.value) });
+    });
+    releaseRow.input.addEventListener('change', () => {
+      upsertGroup(name, { release_ms: parseFloat(releaseRow.input.value) });
+    });
+
+    const footer = document.createElement('div');
+    footer.className = 'group-card-footer';
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn small danger';
+    delBtn.textContent = '삭제';
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`"${name}" 그룹을 삭제할까요? 이 그룹에 속한 채널은 그룹 없음 상태가 됩니다.`)) return;
+      await fetch(`/api/groups/${name}`, { method: 'DELETE' });
+      await loadConfig();
+      buildGroups();
+      buildChannelsTable();
+      buildMonitor();
+    });
+    footer.appendChild(delBtn);
+
+    card.append(header, paletteRow, attackRow.row, releaseRow.row, footer);
+    grid.appendChild(card);
+  });
+}
+
+function makeSliderRow(label, key, value, min, max, step) {
+  const row = document.createElement('div');
+  row.className = 'group-slider-row';
+
+  const labelRow = document.createElement('div');
+  labelRow.className = 'slider-label';
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label + (key === 'attack_ms' ? ' (켜지는 속도)' : ' (꺼지는 속도)');
+  const readout = document.createElement('span');
+  readout.className = 'ms-readout';
+  readout.textContent = `${value} ms`;
+  labelRow.append(labelEl, readout);
+
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(value);
+  input.addEventListener('input', () => {
+    readout.textContent = `${input.value} ms`;
+  });
+
+  row.append(labelRow, input);
+  return { row, input };
+}
+
+async function upsertGroup(name, body) {
+  const res = await fetch(`/api/groups/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    console.error('upsertGroup failed', await res.text());
+    return;
+  }
+  state.config = await res.json();
+}
+
+function bindGroupAdd() {
+  const btn = document.getElementById('add-group-btn');
+  const input = document.getElementById('new-group-name');
+  const paletteRoot = document.getElementById('new-group-palette');
+
+  // The chosen color for the next-to-be-created group. We re-render the
+  // palette whenever it changes so the selected swatch gets the ring.
+  let chosenColor = GROUP_COLOR_PALETTE[0];
+  const rerenderPalette = () => {
+    paletteRoot.innerHTML = '';
+    paletteRoot.appendChild(renderColorPalette(chosenColor, (c) => {
+      chosenColor = c;
+      rerenderPalette();
+    }));
+  };
+  rerenderPalette();
+
+  const submit = async () => {
+    const name = input.value.trim();
+    if (!name) return;
+    if (state.config.groups[name]) {
+      alert('같은 이름의 그룹이 이미 있습니다.');
+      return;
+    }
+    await upsertGroup(name, {
+      attack_ms: 200,
+      release_ms: 1000,
+      color: chosenColor,
+    });
+    input.value = '';
+    // Suggest the next palette slot so successive group adds get distinct colors.
+    const idx = GROUP_COLOR_PALETTE.indexOf(chosenColor);
+    chosenColor = GROUP_COLOR_PALETTE[(idx + 1) % GROUP_COLOR_PALETTE.length];
+    rerenderPalette();
+    await loadConfig();
+    buildGroups();
+    buildChannelsTable();
+    buildMonitor();
+  };
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+}
+
+function randomColor() {
+  const palette = ['#00ff88', '#4488ff', '#ffd700', '#ff4060', '#aa66ff', '#ff8844', '#44ddee'];
+  return palette[Math.floor(Math.random() * palette.length)];
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  state.ws = ws;
+  const dot = document.getElementById('dot');
+  const text = document.getElementById('status-text');
+
+  ws.onopen = () => {
+    dot.className = 'status-dot connected';
+    text.textContent = '연결됨';
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'tick') {
+        renderMonitorTick(msg);
+        renderEngineState(msg.engine || {});
+        renderActivityLog(msg.recent_log || []);
+        renderCueSheet(msg);
+      }
+    } catch (err) { /* ignore */ }
+  };
+
+  ws.onclose = () => {
+    dot.className = 'status-dot error';
+    text.textContent = '연결 끊김 — 재시도 중...';
+    setTimeout(connectWS, 1500);
+  };
+
+  ws.onerror = () => {
+    dot.className = 'status-dot error';
+    text.textContent = '서버 응답 없음';
+  };
+}
+
+// ── Runtime toggles (AUTO|MANUAL · DRY|LIVE) ──────────────────────
+function bindRuntimeToggles() {
+  // AUTO / MANUAL — clicking the segment that's already active is a no-op
+  document.getElementById('seg-auto').addEventListener('click', () => {
+    if (state.config.runtime?.auto !== true) patchRuntime({ auto: true });
+  });
+  document.getElementById('seg-manual').addEventListener('click', () => {
+    if (state.config.runtime?.auto !== false) patchRuntime({ auto: false });
+  });
+  // DRY / LIVE — confirm only when entering LIVE
+  document.getElementById('seg-dry').addEventListener('click', () => {
+    if (state.config.runtime?.dry_run !== true) patchRuntime({ dry_run: true });
+  });
+  document.getElementById('seg-live').addEventListener('click', () => {
+    if (state.config.runtime?.dry_run === false) return;
+    if (!confirm('LIVE 모드로 전환하면 실제로 OBS·PTZ에 명령을 보냅니다. 계속할까요?')) return;
+    patchRuntime({ dry_run: false });
+  });
+}
+
+async function patchRuntime(body) {
+  const res = await fetch('/api/runtime', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    console.error('patchRuntime failed', await res.text());
+    return;
+  }
+  const newRuntime = await res.json();
+  state.config.runtime = newRuntime;
+  renderRuntimeToggles();
+}
+
+function renderRuntimeToggles() {
+  const rt = state.config.runtime || { auto: true, dry_run: true };
+  document.getElementById('seg-auto').classList.toggle('active', rt.auto === true);
+  document.getElementById('seg-manual').classList.toggle('active', rt.auto === false);
+  document.getElementById('seg-dry').classList.toggle('active', rt.dry_run === true);
+  document.getElementById('seg-live').classList.toggle('active', rt.dry_run === false);
+}
+
+// ── Engine state (active card highlight) ──────────────────────────
+// The current rule name now lives in the Rules-tab cuesheet's NOW row,
+// not in the header — keeping the header's UI controls from jittering as
+// rule names change in length.
+function renderEngineState(engine) {
+  document.querySelectorAll('.rule-card').forEach(card => {
+    card.classList.toggle('active-rule', card.dataset.ruleId === engine.active_rule_id);
+  });
+}
+
+// ── Activity log ──────────────────────────────────────────────────
+function renderActivityLog(entries) {
+  const root = document.getElementById('activity-log');
+  if (!entries || !entries.length) {
+    if (root.dataset.state !== 'empty') {
+      root.innerHTML = '<div class="log-empty">아직 매칭된 액션이 없습니다.</div>';
+      root.dataset.state = 'empty';
+    }
+    return;
+  }
+  root.dataset.state = 'has';
+  // Render newest at top
+  const ordered = [...entries].reverse();
+  // Diff-aware update would be nicer; for ≤20 entries, full re-render is fine.
+  root.innerHTML = '';
+  ordered.forEach(e => {
+    const row = document.createElement('div');
+    row.className = 'log-entry';
+    const time = new Date(e.wall_ts * 1000);
+    const hh = String(time.getHours()).padStart(2, '0');
+    const mm = String(time.getMinutes()).padStart(2, '0');
+    const ss = String(time.getSeconds()).padStart(2, '0');
+    const causeIcon = ({
+      manual:     '✋',
+      rotation:   '🔄',
+      transition: '→',
+    })[e.cause] || '·';
+    row.innerHTML = `
+      <span class="log-time">${hh}:${mm}:${ss}</span>
+      <span class="log-type t-${e.type}">${e.type.replace('_', ' ')}</span>
+      <span class="log-rule"><span class="log-cause c-${e.cause || ''}" title="${e.cause || ''}">${causeIcon}</span>${escapeHtml(e.rule_name || '')}</span>
+      <span class="log-detail" title="${escapeHtml(e.detail)}">${escapeHtml(e.detail)}</span>
+      <span class="log-flag ${e.dry_run ? 'dry' : 'live'}">${e.dry_run ? 'DRY' : 'LIVE'}</span>
+    `;
+    root.appendChild(row);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Rules ─────────────────────────────────────────────────────────
+function bindAddRule() {
+  document.getElementById('add-rule-btn').addEventListener('click', async () => {
+    const res = await fetch('/api/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '새 룰' }),
+    });
+    if (!res.ok) { console.error(await res.text()); return; }
+    await loadConfig();
+    buildRules();
+  });
+}
+
+async function updateRule(ruleId, body) {
+  const res = await fetch(`/api/rules/${ruleId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { console.error(await res.text()); return; }
+  state.config = await res.json();
+}
+
+async function deleteRule(ruleId) {
+  await fetch(`/api/rules/${ruleId}`, { method: 'DELETE' });
+  await loadConfig();
+  buildRules();
+}
+
+async function reorderRules(orderedIds) {
+  const res = await fetch('/api/rules/reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order: orderedIds }),
+  });
+  if (!res.ok) { console.error(await res.text()); return; }
+  state.config = await res.json();
+}
+
+function buildRules() {
+  const root = document.getElementById('rules-list');
+  root.innerHTML = '';
+  const rules = (state.config.rules || []).slice().sort((a, b) =>
+    (b.priority ?? 0) - (a.priority ?? 0)
+  );
+
+  if (!rules.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-rules';
+    empty.textContent = '아직 룰이 없습니다. "+ 룰 추가" 버튼으로 첫 룰을 만들어보세요.';
+    root.appendChild(empty);
+    return;
+  }
+
+  rules.forEach(rule => root.appendChild(renderRuleCard(rule)));
+}
+
+function renderRuleCard(rule) {
+  const card = document.createElement('div');
+  card.className = 'rule-card' + (rule.enabled === false ? ' disabled-rule' : '');
+  card.dataset.ruleId = rule.id;
+  card.draggable = true;
+  bindCardDrag(card);
+
+  // Top row: handle, name, priority, active badge, enable toggle, up/down, delete
+  const top = document.createElement('div');
+  top.className = 'rule-card-top';
+
+  const handle = document.createElement('div');
+  handle.className = 'rule-card-handle';
+  handle.title = '드래그해서 우선순위 변경';
+  handle.appendChild(document.createElement('span'));
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'rule-card-name';
+  nameInput.value = rule.name || '';
+  nameInput.placeholder = '룰 이름';
+  nameInput.addEventListener('change', () => updateRule(rule.id, {name: nameInput.value }));
+
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'rule-card-actions-bar';
+
+  // Priority editor — inline number input. Higher = matches first AND can
+  // preempt active rule's cooldown.
+  const priWrap = document.createElement('span');
+  priWrap.style.display = 'inline-flex';
+  priWrap.style.alignItems = 'center';
+  priWrap.style.gap = '2px';
+  const priPrefix = document.createElement('span');
+  priPrefix.className = 'rule-priority-prefix';
+  priPrefix.textContent = 'P';
+  const priInput = document.createElement('input');
+  priInput.type = 'number';
+  priInput.className = 'rule-priority-input';
+  priInput.value = String(rule.priority ?? 0);
+  priInput.min = '0'; priInput.max = '9999'; priInput.step = '10';
+  priInput.title = '우선순위 — 높을수록 먼저 매칭되고, 현재 룰의 쿨다운도 즉시 무시하고 끼어듭니다';
+  priInput.addEventListener('change', async () => {
+    const v = parseInt(priInput.value);
+    if (Number.isNaN(v)) return;
+    await updateRule(rule.id, {priority: v });
+    buildRules();  // re-sort by new priority
+  });
+  priWrap.append(priPrefix, priInput);
+
+  const runBtn = document.createElement('button');
+  runBtn.className = 'btn small btn-run';
+  runBtn.textContent = '▶ 테스트';
+  runBtn.title = '조건 무시하고 이 룰의 액션을 즉시 실행 (DRY/LIVE 모드는 그대로 따름)';
+  runBtn.addEventListener('click', async () => {
+    runBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/rules/${rule.id}/run`, { method: 'POST' });
+      if (!res.ok) {
+        alert('실행 실패: ' + await res.text());
+        return;
+      }
+      // Brief visual ack — actual results show up in Activity Log via WS tick
+      runBtn.textContent = '✓ 보냄';
+      setTimeout(() => { runBtn.textContent = '▶ 테스트'; }, 900);
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+
+  const enableBtn = document.createElement('button');
+  enableBtn.className = 'btn small';
+  enableBtn.textContent = rule.enabled === false ? '꺼짐' : 'ON';
+  enableBtn.style.color = rule.enabled === false ? 'var(--muted)' : 'var(--green)';
+  enableBtn.addEventListener('click', async () => {
+    await updateRule(rule.id, {enabled: !(rule.enabled !== false) });
+    buildRules();
+  });
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn small danger';
+  delBtn.textContent = '삭제';
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`"${rule.name}" 룰을 삭제할까요?`)) return;
+    await deleteRule(rule.id);
+  });
+
+  actionsBar.append(priWrap, runBtn, enableBtn, delBtn);
+  top.append(handle, nameInput, actionsBar);
+
+  // Conditions section — tri-state group pills
+  const condSection = document.createElement('div');
+  condSection.className = 'rule-section';
+  const condLabel = document.createElement('div');
+  condLabel.className = 'rule-section-label';
+  condLabel.textContent = 'IF — 그룹 클릭으로 토글: 활성 → 비활성 → 상관없음';
+  condSection.appendChild(condLabel);
+  condSection.appendChild(renderConditionPills(rule));
+
+  // Actions section — HTTP-only.
+  const actSection = document.createElement('div');
+  actSection.className = 'rule-section';
+  const actLabel = document.createElement('div');
+  actLabel.className = 'rule-section-label';
+  const assUrl = state.config.connections?.ass_http?.url || '';
+  const assMethod = state.config.connections?.ass_http?.method || 'POST';
+  actLabel.innerHTML = assUrl
+    ? `THEN — 매칭 시 호출  &nbsp;<span class="ass-url-readonly">${assMethod} ${escapeHtml(assUrl)}</span>`
+    : `THEN — <span style="color:var(--yellow)">Connections 탭에서 ASS HTTP URL을 먼저 설정하세요</span>`;
+  actSection.appendChild(actLabel);
+
+  const actRows = document.createElement('div');
+  (rule.actions || []).forEach((a, i) => {
+    if (a.type === 'http_request') {
+      actRows.appendChild(renderHttpActionCard(rule, a, i));
+    }
+  });
+  actSection.appendChild(actRows);
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn small';
+  addBtn.textContent = '+ 액션 추가';
+  addBtn.style.marginTop = '8px';
+  addBtn.addEventListener('click', async () => {
+    const next = [...(rule.actions || []), { type: 'http_request', body: '' }];
+    await updateRule(rule.id, {actions: next });
+    buildRules();
+  });
+  actSection.appendChild(addBtn);
+
+  // Cooldown
+  const cdRow = document.createElement('div');
+  cdRow.className = 'rule-cooldown-row';
+  const cdLabel = document.createElement('span');
+  cdLabel.textContent = '쿨다운 (이 룰로 전환된 뒤 다른 룰로 못 넘어가는 시간)';
+  const cdSlider = document.createElement('input');
+  cdSlider.type = 'range';
+  cdSlider.min = '0'; cdSlider.max = '30'; cdSlider.step = '0.5';
+  cdSlider.value = String(rule.cooldown_s ?? 3.0);
+  const cdReadout = document.createElement('span');
+  cdReadout.className = 'ms-readout';
+  const renderCd = () => { cdReadout.textContent = `${parseFloat(cdSlider.value).toFixed(1)} s`; };
+  renderCd();
+  cdSlider.addEventListener('input', renderCd);
+  cdSlider.addEventListener('change', () => {
+    updateRule(rule.id, {cooldown_s: parseFloat(cdSlider.value) });
+  });
+  cdRow.append(cdLabel, cdSlider, cdReadout);
+
+  card.append(top, condSection, actSection, cdRow);
+  return card;
+}
+
+// Tri-state pills. Conditions are derived from rule.conditions; a group not
+// present in that array is "any" (don't care). Click cycles: any → active →
+// inactive → any.
+function renderConditionPills(rule) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cond-pills';
+
+  const conds = rule.conditions || [];
+  const byGroup = {};
+  for (const c of conds) byGroup[c.group] = c.state;
+
+  const groupNames = Object.keys(state.config.groups);
+  if (groupNames.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'cond-empty';
+    empty.textContent = '먼저 Groups 탭에서 그룹을 만들어주세요.';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  // Live group activity (peak_db / active) for visual feedback — wired from
+  // the latest WS tick via state.liveGroupState (populated below).
+  const liveGroups = state.liveGroupState || {};
+
+  groupNames.forEach(name => {
+    const stateNow = byGroup[name];   // 'active' | 'inactive' | undefined
+    const pill = document.createElement('button');
+    pill.className = 'cond-pill';
+    pill.dataset.group = name;
+    if (stateNow === 'active')   pill.classList.add('cp-active');
+    if (stateNow === 'inactive') pill.classList.add('cp-inactive');
+    if (liveGroups[name]?.active) pill.classList.add('cp-live');
+
+    const icon = document.createElement('span');
+    icon.className = 'cp-icon';
+    icon.textContent = stateNow === 'active'   ? '●'
+                     : stateNow === 'inactive' ? '○'
+                                                : '·';
+
+    const label = document.createElement('span');
+    label.className = 'cp-name';
+    label.textContent = name;
+
+    pill.append(icon, label);
+    pill.title = ({
+      active:   `"${name}" 그룹이 활성일 때 매칭. 클릭 → 비활성으로`,
+      inactive: `"${name}" 그룹이 비활성일 때 매칭. 클릭 → 상관없음으로`,
+    })[stateNow] || `"${name}" 그룹은 매칭에 영향 없음. 클릭 → 활성으로`;
+
+    pill.addEventListener('click', async () => {
+      // Cycle: any → active → inactive → any
+      const cur = byGroup[name];
+      const nextState = cur === 'active' ? 'inactive'
+                       : cur === 'inactive' ? null
+                       : 'active';
+      const filtered = (rule.conditions || []).filter(c => c.group !== name);
+      const next = nextState === null ? filtered
+                   : [...filtered, { group: name, state: nextState }];
+      await updateRule(rule.id, {conditions: next });
+      buildRules();
+    });
+
+    wrap.appendChild(pill);
+  });
+
+  // Render any orphaned conditions (group deleted but condition still there)
+  // so users can clean them up.
+  for (const c of conds) {
+    if (groupNames.includes(c.group)) continue;
+    const pill = document.createElement('button');
+    pill.className = 'cond-pill cp-orphan';
+    pill.title = `존재하지 않는 그룹 — 클릭해서 제거`;
+    pill.innerHTML = `<span class="cp-icon">⚠</span><span class="cp-name">${escapeHtml(c.group)}</span>`;
+    pill.addEventListener('click', async () => {
+      const next = (rule.conditions || []).filter(x => x.group !== c.group);
+      await updateRule(rule.id, {conditions: next });
+      buildRules();
+    });
+    wrap.appendChild(pill);
+  }
+
+  return wrap;
+}
+
+function renderConditionRow(rule, cond, idx) {
+  const row = document.createElement('div');
+  row.className = 'cond-row';
+
+  const groupNames = Object.keys(state.config.groups);
+  const groupSel = document.createElement('select');
+  groupNames.forEach(g => {
+    const o = document.createElement('option');
+    o.value = g; o.textContent = g;
+    groupSel.appendChild(o);
+  });
+  groupSel.value = cond.group || groupNames[0] || '';
+
+  const stateSel = document.createElement('select');
+  [['active', '활성'], ['inactive', '비활성']].forEach(([v, label]) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    stateSel.appendChild(o);
+  });
+  stateSel.value = cond.state || 'active';
+
+  const glue = document.createElement('span');
+  glue.className = 'glue-text';
+  glue.textContent = idx === 0 ? 'if' : 'and';
+
+  const isText = document.createElement('span');
+  isText.className = 'glue-text';
+  isText.textContent = '이/가';
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn small danger';
+  delBtn.textContent = '×';
+  delBtn.title = '조건 삭제';
+
+  const commit = () => {
+    const next = (rule.conditions || []).slice();
+    next[idx] = { group: groupSel.value, state: stateSel.value };
+    updateRule(rule.id, {conditions: next });
+  };
+  groupSel.addEventListener('change', commit);
+  stateSel.addEventListener('change', commit);
+
+  delBtn.addEventListener('click', async () => {
+    const next = (rule.conditions || []).slice();
+    next.splice(idx, 1);
+    await updateRule(rule.id, {conditions: next });
+    buildRules();
+  });
+
+  row.append(glue, groupSel, isText, stateSel, delBtn);
+  return row;
+}
+
+// Simplified action card: body-only. The URL/method come from the global
+// connections.ass_http config and are shown read-only in the section header.
+function renderHttpActionCard(rule, action, idx) {
+  const card = document.createElement('div');
+  card.className = 'http-action-card';
+
+  const bodyIn = document.createElement('textarea');
+  bodyIn.className = 'http-action-body';
+  bodyIn.rows = 2;
+  bodyIn.placeholder = '{"name":"pastor_active"}';
+  bodyIn.value = action.body || '';
+  bodyIn.addEventListener('change', () => {
+    const next = (rule.actions || []).slice();
+    next[idx] = { ...next[idx], type: 'http_request', body: bodyIn.value };
+    updateRule(rule.id, {actions: next });
+  });
+
+  const del = document.createElement('button');
+  del.className = 'btn small danger';
+  del.textContent = '×';
+  del.title = '이 액션 삭제';
+  del.addEventListener('click', async () => {
+    const next = (rule.actions || []).slice();
+    next.splice(idx, 1);
+    await updateRule(rule.id, {actions: next });
+    buildRules();
+  });
+
+  card.append(bodyIn, del);
+  return card;
+}
+
+// Drag-and-drop reordering
+let dragSrcId = null;
+function bindCardDrag(card) {
+  card.addEventListener('dragstart', (e) => {
+    dragSrcId = card.dataset.ruleId;
+    card.style.opacity = '0.4';
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  card.addEventListener('dragend', () => {
+    dragSrcId = null;
+    card.style.opacity = '';
+  });
+  card.addEventListener('dragover', (e) => {
+    if (!dragSrcId || dragSrcId === card.dataset.ruleId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+  card.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    if (!dragSrcId || dragSrcId === card.dataset.ruleId) return;
+    const root = document.getElementById('rules-list');
+    const ids = [...root.querySelectorAll('.rule-card')].map(c => c.dataset.ruleId);
+    const fromIdx = ids.indexOf(dragSrcId);
+    const toIdx = ids.indexOf(card.dataset.ruleId);
+    ids.splice(fromIdx, 1);
+    ids.splice(toIdx, 0, dragSrcId);
+    await reorderRules(ids);
+    buildRules();
+  });
+}
+
+// ── Connections form ─────────────────────────────────────────────
+function buildConnections() {
+  const ass = state.config.connections?.ass_http || { url: '', method: 'POST' };
+  document.getElementById('ass-http-url').value = ass.url || '';
+  document.getElementById('ass-http-method').value = ass.method === 'GET' ? 'GET' : 'POST';
+}
+
+function bindConnectionsForm() {
+  document.getElementById('ass-http-save-btn').addEventListener('click', async () => {
+    const url = document.getElementById('ass-http-url').value.trim();
+    const method = document.getElementById('ass-http-method').value;
+    const res = await fetch('/api/connections/ass_http', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, method }),
+    });
+    if (!res.ok) {
+      alert('저장 실패: ' + await res.text());
+      return;
+    }
+    await loadConfig();
+    buildRules();  // action card shows the URL — refresh
+  });
+}
+
+boot();

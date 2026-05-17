@@ -1,0 +1,10 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime temp files
+*.json.tmp
+
+# OS
+.DS_Store

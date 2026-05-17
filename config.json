@@ -1,0 +1,345 @@
+{
+  "audio": {
+    "device_name": "X32",
+    "device_index": null,
+    "channels": 32,
+    "samplerate": 48000,
+    "blocksize": 2048,
+    "demo_mode": false
+  },
+  "channels": [
+    {
+      "id": 1,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 2,
+      "name": "Leader",
+      "group": "Leader",
+      "threshold_db": -67.0
+    },
+    {
+      "id": 3,
+      "name": "Leader",
+      "group": "Leader",
+      "threshold_db": -66.0
+    },
+    {
+      "id": 4,
+      "name": "Singer",
+      "group": "singers",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 5,
+      "name": "Singer",
+      "group": "singers",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 6,
+      "name": "John Cho",
+      "group": "Leader",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 7,
+      "name": "Singer",
+      "group": "singers",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 8,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 9,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 10,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 11,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 12,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 13,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 14,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 15,
+      "name": "PC",
+      "group": null,
+      "threshold_db": -61.0
+    },
+    {
+      "id": 16,
+      "name": "PC",
+      "group": null,
+      "threshold_db": -60.0
+    },
+    {
+      "id": 17,
+      "name": "",
+      "group": null,
+      "threshold_db": -64.0
+    },
+    {
+      "id": 18,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 19,
+      "name": "Drum",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 20,
+      "name": "Drum",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 21,
+      "name": "Piano L",
+      "group": "instruments",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 22,
+      "name": "Piano R",
+      "group": "instruments",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 23,
+      "name": "Synthesizer",
+      "group": "instruments",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 24,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 25,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 26,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 27,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 28,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 29,
+      "name": "Drum",
+      "group": "instruments",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 30,
+      "name": "Drum",
+      "group": "instruments",
+      "threshold_db": -45.0
+    },
+    {
+      "id": 31,
+      "name": "",
+      "group": null,
+      "threshold_db": -45.0
+    },
+    {
+      "id": 32,
+      "name": "Drum",
+      "group": "instruments",
+      "threshold_db": -45.0
+    }
+  ],
+  "groups": {
+    "singers": {
+      "attack_ms": 200,
+      "release_ms": 2000.0,
+      "color": "#00ff88"
+    },
+    "instruments": {
+      "attack_ms": 60.0,
+      "release_ms": 800,
+      "color": "#4488ff"
+    },
+    "Leader": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#ffd700"
+    }
+  },
+  "rules": [
+    {
+      "id": "rule_d68f8531",
+      "name": "Idle",
+      "priority": 40,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "singers",
+          "state": "inactive"
+        },
+        {
+          "group": "instruments",
+          "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "idle"
+        }
+      ],
+      "cooldown_s": 3.0
+    },
+    {
+      "id": "rule_95d3efd6",
+      "name": "All",
+      "priority": 30,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Leader",
+          "state": "active"
+        },
+        {
+          "group": "instruments",
+          "state": "active"
+        },
+        {
+          "group": "singers",
+          "state": "active"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "POST",
+          "url": "",
+          "body": "all"
+        }
+      ],
+      "cooldown_s": 5.0
+    },
+    {
+      "id": "rule_db0d8d5d",
+      "name": "Leader Only",
+      "priority": 20,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Leader",
+          "state": "active"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "{text: \"leader\"}"
+        }
+      ],
+      "cooldown_s": 5.0
+    },
+    {
+      "id": "rule_ceca2d59",
+      "name": "Instrument Only",
+      "priority": 10,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "instruments",
+          "state": "active"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "instrument"
+        }
+      ],
+      "cooldown_s": 3.0
+    }
+  ],
+  "connections": {
+    "ass_http": {
+      "url": "http://127.0.0.1:16384/global-target",
+      "method": "POST"
+    }
+  },
+  "runtime": {
+    "auto": true,
+    "dry_run": true
+  }
+}

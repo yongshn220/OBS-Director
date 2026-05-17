@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X32 Auto-Director</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">X32</div>
+    <div>
+      <h1>Auto-Director</h1>
+      <div class="subtitle">Behringer X32 · HTTP</div>
+    </div>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="monitor">Monitor</button>
+    <button class="tab" data-tab="channels">Channels</button>
+    <button class="tab" data-tab="groups">Groups</button>
+    <button class="tab" data-tab="rules">Rules</button>
+    <button class="tab" data-tab="connections">Connections</button>
+  </nav>
+
+  <div class="status-bar">
+    <div class="seg-toggle" title="AUTO: 룰 엔진이 자동으로 씬 전환 · MANUAL: 엔진 일시정지">
+      <button class="seg seg-auto" id="seg-auto">AUTO</button>
+      <button class="seg seg-manual" id="seg-manual">MANUAL</button>
+    </div>
+    <div class="seg-toggle" title="DRY: 매칭만 로그에 기록 · LIVE: 실제로 HTTP 요청 전송">
+      <button class="seg seg-dry" id="seg-dry">DRY</button>
+      <button class="seg seg-live" id="seg-live">LIVE</button>
+    </div>
+    <span id="mode-pill" class="mode-pill mode-idle">—</span>
+    <div class="status-dot" id="dot"></div>
+    <span id="status-text">연결 중...</span>
+  </div>
+</header>
+
+<main>
+  <!-- ─ Monitor ────────────────────────────────────────────────── -->
+  <section class="panel" id="panel-monitor">
+    <div class="legend">
+      <span><span class="dot" style="background:var(--green)"></span> 신호 있음</span>
+      <span><span class="dot" style="background:var(--yellow)"></span> 주의</span>
+      <span><span class="dot" style="background:var(--red)"></span> 클리핑</span>
+      <span style="margin-left:auto" id="peak-display"></span>
+      <span id="fps-display">— fps</span>
+    </div>
+
+    <div class="group-pills" id="group-pills"></div>
+
+    <div class="channels-grid" id="grid"></div>
+  </section>
+
+  <!-- ─ Channels ───────────────────────────────────────────────── -->
+  <section class="panel hidden" id="panel-channels">
+    <div class="panel-header">
+      <h2>채널 → 그룹 매핑</h2>
+      <p class="hint">채널 이름과 임계값(dB)을 설정하고, 어느 그룹에 속하는지 지정하세요.</p>
+    </div>
+    <div class="channels-table" id="channels-table"></div>
+  </section>
+
+  <!-- ─ Rules ──────────────────────────────────────────────────── -->
+  <section class="panel hidden" id="panel-rules">
+    <div class="panel-header rules-header">
+      <div>
+        <h2>룰 (위 → 아래 = 우선순위 높음 → 낮음)</h2>
+        <p class="hint">
+          그룹의 활성/비활성 조합에 따라 OBS 씬·PTZ 프리셋을 자동 전환합니다.
+          상단 헤더에서 <strong>AUTO</strong>·<strong>DRY</strong>로 엔진을 제어하세요.
+        </p>
+      </div>
+      <button class="btn primary" id="add-rule-btn">+ 룰 추가</button>
+    </div>
+
+    <!-- 큐시트: 라이브 상황(미니 모니터) + 매칭 큐를 한 패널에 묶음.
+         미니 모니터는 그룹 활성/피크 dB · OBS 현재 씬을 보여주고,
+         큐 행은 NOW / NEXT / …로 우선순위 순 매칭 룰을 표시. -->
+    <section class="cuesheet">
+      <div class="cs-header">
+        <h2>큐시트</h2>
+        <span class="cs-sub">라이브 상황 + 우선순위 순 매칭 룰</span>
+      </div>
+      <div class="cs-mini-mon" id="cs-mini-mon"></div>
+      <div class="cs-queue" id="cs-queue">
+        <div class="cs-queue-empty">— 매칭되는 룰 없음 —</div>
+      </div>
+    </section>
+
+    <div class="rules-list" id="rules-list"></div>
+
+    <div class="panel-header" style="margin-top:28px">
+      <h2>활동 로그 (최근 20개)</h2>
+      <p class="hint">룰 매칭과 액션 실행 이력. DRY 모드에서도 실제 호출 직전까지 시뮬레이션됩니다.</p>
+    </div>
+    <div class="activity-log" id="activity-log"></div>
+  </section>
+
+  <!-- ─ Connections ────────────────────────────────────────────── -->
+  <section class="panel hidden" id="panel-connections">
+    <div class="panel-header">
+      <h2>ASS HTTP 서버 (룰 액션이 호출하는 주소)</h2>
+      <p class="hint">
+        모든 룰의 HTTP 액션이 이 주소로 요청을 보냅니다. ASS의
+        <strong>HTTP Servers</strong> 탭에서 띄운 서버 주소를 적어주세요.
+        각 룰의 액션에는 body만 입력하면 됩니다.
+      </p>
+    </div>
+
+    <div class="conn-card" style="max-width:640px">
+      <div class="conn-form">
+        <label class="full">
+          <span>URL</span>
+          <input type="text" id="ass-http-url" placeholder="http://localhost:7654/trigger">
+        </label>
+        <label>
+          <span>Method</span>
+          <select id="ass-http-method">
+            <option value="POST">POST</option>
+            <option value="GET">GET</option>
+          </select>
+        </label>
+      </div>
+      <div class="conn-actions">
+        <button class="btn primary" id="ass-http-save-btn">저장</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─ Groups ─────────────────────────────────────────────────── -->
+  <section class="panel hidden" id="panel-groups">
+    <div class="panel-header">
+      <h2>그룹별 반응 속도</h2>
+      <p class="hint">
+        Attack: 신호가 임계값을 넘은 뒤 "활성"으로 인정되기까지의 시간 ·
+        Release: 신호가 끊긴 뒤 "비활성"으로 돌아가기까지의 시간
+      </p>
+    </div>
+
+    <div class="groups-grid" id="groups-grid"></div>
+
+    <div class="add-group">
+      <input type="text" id="new-group-name" placeholder="새 그룹 이름 (예: choir)" maxlength="24">
+      <div id="new-group-palette" class="color-palette"></div>
+      <button class="btn primary" id="add-group-btn">+ 그룹 추가</button>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
