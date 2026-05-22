@@ -77,15 +77,23 @@ class RuleEngine:
       - When the candidate differs from the currently active rule, switch only
         if `now - active_since >= active_rule.cooldown_s` (unless the candidate
         has strictly higher priority, which preempts immediately).
-      - On switch, fire the rule's http_request actions ONCE.
+      - On switch, fire the active rule's http_request actions immediately.
+      - While the rule remains active, re-fire those actions every
+        `runtime.refire_s` seconds as a self-healing heartbeat (so the
+        downstream HTTP target self-recovers from restarts / dropped packets).
+        Set refire_s to 0 to disable and keep only the one-shot transition fire.
     """
 
     LOG_MAX = 100
+    DEFAULT_REFIRE_S = 3.0
 
     def __init__(self, config_store):
         self.config_store = config_store
         self.active_rule_id: str | None = None
         self.active_since: float = 0.0
+        # rule_id -> next monotonic time at which a refire should fire.
+        # Populated on transition; cleared on release/switch.
+        self._refire_at: dict[str, float] = {}
         self._action_log: deque[dict[str, Any]] = deque(maxlen=self.LOG_MAX)
 
     # ── Public ────────────────────────────────────────────────────
@@ -96,6 +104,7 @@ class RuleEngine:
         rules: list[dict[str, Any]] = cfg.get("rules") or []
         dry_run: bool = bool(runtime.get("dry_run", True))
         auto: bool = bool(runtime.get("auto", True))
+        refire_s: float = float(runtime.get("refire_s", self.DEFAULT_REFIRE_S))
 
         now = time.monotonic()
 
@@ -127,6 +136,7 @@ class RuleEngine:
                 active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
                 cooldown = float(active_rule.get("cooldown_s", 0.0)) if active_rule else 0.0
                 if now - self.active_since >= cooldown:
+                    self._refire_at.pop(self.active_rule_id, None)
                     self.active_rule_id = None
                     self.active_since = now
         else:
@@ -146,11 +156,33 @@ class RuleEngine:
                     switch_to = candidate
 
         if switch_to is not None:
+            # If we were holding a different rule, drop its refire schedule.
+            if self.active_rule_id is not None and self.active_rule_id != switch_to["id"]:
+                self._refire_at.pop(self.active_rule_id, None)
             self.active_rule_id = switch_to["id"]
             self.active_since = now
             for action in switch_to.get("actions", []):
                 if action["type"] == "http_request":
                     fired.append(self._fire(switch_to, action, dry_run, now, "transition"))
+            # Arm the refire heartbeat (disabled when refire_s <= 0).
+            if refire_s > 0:
+                self._refire_at[switch_to["id"]] = now + refire_s
+
+        # Refire heartbeat: while the rule is held, re-fire its http_request
+        # actions every refire_s seconds so the downstream target self-heals.
+        if self.active_rule_id is not None and refire_s > 0:
+            next_at = self._refire_at.get(self.active_rule_id)
+            if next_at is None:
+                # Just-activated rules already armed above; this covers rules
+                # that became active before refire_s was set (config edit).
+                self._refire_at[self.active_rule_id] = now + refire_s
+            elif now >= next_at:
+                active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
+                if active_rule is not None:
+                    for action in active_rule.get("actions", []):
+                        if action["type"] == "http_request":
+                            fired.append(self._fire(active_rule, action, dry_run, now, "refire"))
+                self._refire_at[self.active_rule_id] = now + refire_s
 
         active_name = None
         active_rule_cooldown_remaining = None
@@ -162,6 +194,7 @@ class RuleEngine:
                 active_rule_cooldown_remaining = max(0.0, cd - (now - self.active_since))
             else:
                 # Rule was deleted while active
+                self._refire_at.pop(self.active_rule_id, None)
                 self.active_rule_id = None
 
         # Build the live "match queue" — every rule currently matching,

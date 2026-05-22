@@ -39,7 +39,9 @@ def _default_config() -> dict[str, Any]:
         "rules": [],
         "runtime": {
             "auto": True,        # AUTO ON: rule engine drives output. OFF: idle.
-            "dry_run": True,     # logs only; no real OBS/PTZ calls until cleared
+            "dry_run": True,     # logs only; no HTTP requests sent until cleared
+            "refire_s": 3.0,     # while a rule stays active, re-fire its http
+                                 # actions every N seconds (self-healing). 0 = off.
         },
         "connections": {
             # Global default URL used by http_request actions whose own `url`
