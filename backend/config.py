@@ -22,7 +22,7 @@ def _default_config() -> dict[str, Any]:
         channels.append({
             "id": i + 1,
             "name": "",
-            "group": None,
+            "groups": [],
             "threshold_db": -45.0,
         })
     return {
@@ -83,6 +83,21 @@ class ConfigStore:
         merged_channels = []
         for c in defaults["channels"]:
             merged_channels.append(existing.get(c["id"], c))
+        # Migrate legacy single-group channels to a groups list.
+        # Old schema:  ch.group: str|None        (one group per channel)
+        # New schema:  ch.groups: list[str]      (multi-group per channel)
+        for ch in merged_channels:
+            if "groups" not in ch:
+                legacy = ch.pop("group", None)
+                ch["groups"] = [legacy] if legacy else []
+            else:
+                # Drop stale legacy field if both somehow exist; dedupe; strip falsy
+                ch.pop("group", None)
+                seen = set()
+                ch["groups"] = [
+                    g for g in (ch.get("groups") or [])
+                    if g and not (g in seen or seen.add(g))
+                ]
         data["channels"] = merged_channels
         return data
 

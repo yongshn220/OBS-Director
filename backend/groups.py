@@ -17,6 +17,9 @@ class GroupEvaluator:
     A group is "active" if any of its member channels has been over its
     threshold continuously for >= attack_ms. It returns to "inactive" only
     after all members have been under threshold for >= release_ms.
+
+    Channels may belong to multiple groups (via ch.groups list); a channel's
+    level contributes independently to each group it is a member of.
     """
 
     def __init__(self, config_store):
@@ -30,12 +33,18 @@ class GroupEvaluator:
         groups_cfg = cfg["groups"]
         now = time.monotonic()
 
-        # Map group -> list of (channel_idx, threshold_db)
+        # Map group -> list of (channel_idx, threshold_db). A channel may
+        # belong to multiple groups; it contributes its level to each one.
         members: dict[str, list[tuple[int, float]]] = {g: [] for g in groups_cfg}
         for ch in channels_cfg:
-            g = ch.get("group")
-            if g and g in members:
-                members[g].append((ch["id"] - 1, ch.get("threshold_db", -45.0)))
+            chan_groups = ch.get("groups") or []
+            # Backward compat: tolerate stale single-group field if a caller
+            # bypassed ConfigStore migration (e.g. unit tests).
+            if not chan_groups and ch.get("group"):
+                chan_groups = [ch["group"]]
+            for g in chan_groups:
+                if g in members:
+                    members[g].append((ch["id"] - 1, ch.get("threshold_db", -45.0)))
 
         result: dict[str, dict[str, Any]] = {}
 

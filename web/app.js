@@ -101,11 +101,16 @@ function buildMonitor() {
 
     const groupTag = document.createElement('div');
     groupTag.className = 'ch-group-tag';
-    if (ch.group) {
-      groupTag.textContent = ch.group;
-      const color = state.config.groups[ch.group]?.color;
-      if (color) groupTag.style.color = color;
-    }
+    const chGroups = ch.groups || (ch.group ? [ch.group] : []);
+    chGroups.forEach((g, i) => {
+      if (i > 0) groupTag.appendChild(document.createTextNode(' '));
+      const pill = document.createElement('span');
+      pill.className = 'ch-group-pill';
+      pill.textContent = g;
+      const color = state.config.groups[g]?.color;
+      if (color) pill.style.color = color;
+      groupTag.appendChild(pill);
+    });
 
     const wrap = document.createElement('div');
     wrap.className = 'vu-wrap';
@@ -379,25 +384,50 @@ function buildChannelsTable() {
     nameInput.value = ch.name || '';
     nameInput.addEventListener('change', () => patchChannel(ch.id, { name: nameInput.value }));
 
-    const groupSel = document.createElement('select');
-    const optNone = document.createElement('option');
-    optNone.value = '__none__';
-    optNone.textContent = '— 그룹 없음 —';
-    groupSel.appendChild(optNone);
-    groupNames.forEach(g => {
-      const o = document.createElement('option');
-      o.value = g;
-      o.textContent = g;
-      groupSel.appendChild(o);
+    // Multi-group cell: chip per assigned group (with ×) + an add-dropdown
+    // listing groups not yet assigned. Channels can be in 0..N groups.
+    const groupCell = document.createElement('div');
+    groupCell.className = 'ch-groups-cell';
+    const current = (ch.groups && ch.groups.length)
+      ? [...ch.groups]
+      : (ch.group ? [ch.group] : []);  // legacy fallback
+    current.forEach(g => {
+      const chip = document.createElement('span');
+      chip.className = 'ch-group-chip';
+      const color = state.config.groups[g]?.color;
+      if (color) chip.style.borderColor = color;
+      const label = document.createElement('span');
+      label.className = 'cgc-name';
+      label.textContent = g;
+      if (color) label.style.color = color;
+      const x = document.createElement('button');
+      x.className = 'cgc-x';
+      x.textContent = '×';
+      x.title = '이 그룹에서 제거';
+      x.addEventListener('click', () => {
+        patchChannel(ch.id, { groups: current.filter(g2 => g2 !== g) });
+      });
+      chip.append(label, x);
+      groupCell.appendChild(chip);
     });
-    groupSel.value = ch.group || '__none__';
-    groupSel.addEventListener('change', () => {
-      if (groupSel.value === '__none__') {
-        patchChannel(ch.id, { clear_group: true });
-      } else {
-        patchChannel(ch.id, { group: groupSel.value });
-      }
-    });
+    const remaining = groupNames.filter(g => !current.includes(g));
+    if (remaining.length) {
+      const add = document.createElement('select');
+      add.className = 'ch-group-add';
+      const ph = document.createElement('option');
+      ph.value = ''; ph.textContent = current.length ? '+ 추가' : '+ 그룹 선택';
+      add.appendChild(ph);
+      remaining.forEach(g => {
+        const o = document.createElement('option');
+        o.value = g; o.textContent = g;
+        add.appendChild(o);
+      });
+      add.addEventListener('change', () => {
+        if (!add.value) return;
+        patchChannel(ch.id, { groups: [...current, add.value] });
+      });
+      groupCell.appendChild(add);
+    }
 
     const thrCell = document.createElement('div');
     thrCell.className = 'threshold-cell';
@@ -432,7 +462,7 @@ function buildChannelsTable() {
     live.append(bar, liveValue);
     state.channelLiveDb[ch.id - 1] = { wrap: live, bar: barFill, value: liveValue };
 
-    row.append(num, nameInput, groupSel, thrCell, live);
+    row.append(num, nameInput, groupCell, thrCell, live);
     root.appendChild(row);
   });
 }
@@ -448,8 +478,10 @@ async function patchChannel(id, body) {
     return;
   }
   state.config = await res.json();
-  // Refresh dependent views
+  // Refresh dependent views (chips, monitor tags, member counts)
   buildMonitor();
+  buildChannelsTable();
+  buildGroups();
 }
 
 // ── Groups ────────────────────────────────────────────────────────
@@ -460,7 +492,10 @@ function buildGroups() {
   const memberCounts = {};
   Object.keys(groups).forEach(g => memberCounts[g] = 0);
   state.config.channels.forEach(c => {
-    if (c.group && memberCounts[c.group] !== undefined) memberCounts[c.group]++;
+    const cgs = c.groups || (c.group ? [c.group] : []);
+    cgs.forEach(g => {
+      if (memberCounts[g] !== undefined) memberCounts[g]++;
+    });
   });
 
   Object.entries(groups).forEach(([name, g]) => {

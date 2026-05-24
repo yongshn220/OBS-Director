@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .audio import AudioMonitor
 from .config import ConfigStore
@@ -96,9 +96,11 @@ def get_config():
 
 class ChannelPatch(BaseModel):
     name: str | None = None
-    group: str | None = Field(default=None)
+    # None  → no change to group membership
+    # []    → clear all groups
+    # [...] → replace with exactly this set (deduped, validated)
+    groups: list[str] | None = None
     threshold_db: float | None = None
-    clear_group: bool = False  # explicit flag because group=None is ambiguous
 
 
 @app.patch("/api/channels/{channel_id}")
@@ -110,12 +112,17 @@ def patch_channel(channel_id: int, patch: ChannelPatch):
                     ch["name"] = patch.name
                 if patch.threshold_db is not None:
                     ch["threshold_db"] = float(patch.threshold_db)
-                if patch.clear_group:
-                    ch["group"] = None
-                elif patch.group is not None:
-                    if patch.group not in data["groups"]:
-                        raise HTTPException(400, f"unknown group: {patch.group}")
-                    ch["group"] = patch.group
+                if patch.groups is not None:
+                    seen = set()
+                    cleaned: list[str] = []
+                    for g in patch.groups:
+                        if not g or g in seen:
+                            continue
+                        if g not in data["groups"]:
+                            raise HTTPException(400, f"unknown group: {g}")
+                        seen.add(g)
+                        cleaned.append(g)
+                    ch["groups"] = cleaned
                 return data
         raise HTTPException(404, f"channel {channel_id} not found")
     return config_store.update(mutate)
@@ -148,10 +155,11 @@ def delete_group(name: str):
         if name not in data["groups"]:
             raise HTTPException(404, f"group {name} not found")
         del data["groups"][name]
-        # Detach channels from this group
+        # Detach channels from this group (remove name from their groups list)
         for ch in data["channels"]:
-            if ch.get("group") == name:
-                ch["group"] = None
+            gs = ch.get("groups") or []
+            if name in gs:
+                ch["groups"] = [g for g in gs if g != name]
         return data
     return config_store.update(mutate)
 

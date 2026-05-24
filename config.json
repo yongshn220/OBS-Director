@@ -11,194 +11,218 @@
     {
       "id": 1,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 2,
       "name": "Leader",
-      "group": "Leader",
-      "threshold_db": -67.0
+      "threshold_db": -67.0,
+      "groups": [
+        "Pastor"
+      ]
     },
     {
       "id": 3,
       "name": "Leader",
-      "group": "Leader",
-      "threshold_db": -66.0
+      "threshold_db": -66.0,
+      "groups": [
+        "Leader"
+      ]
     },
     {
       "id": 4,
       "name": "Singer",
-      "group": "singers",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "singers"
+      ]
     },
     {
       "id": 5,
       "name": "Singer",
-      "group": "singers",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "singers"
+      ]
     },
     {
       "id": 6,
       "name": "John Cho",
-      "group": "Leader",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "Leader"
+      ]
     },
     {
       "id": 7,
       "name": "Singer",
-      "group": "singers",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "singers"
+      ]
     },
     {
       "id": 8,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 9,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 10,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 11,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 12,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 13,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 14,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 15,
       "name": "PC",
-      "group": null,
-      "threshold_db": -61.0
+      "threshold_db": -61.0,
+      "groups": []
     },
     {
       "id": 16,
       "name": "PC",
-      "group": null,
-      "threshold_db": -60.0
+      "threshold_db": -60.0,
+      "groups": []
     },
     {
       "id": 17,
       "name": "",
-      "group": null,
-      "threshold_db": -64.0
+      "threshold_db": -64.0,
+      "groups": []
     },
     {
       "id": 18,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 19,
       "name": "Drum",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 20,
       "name": "Drum",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 21,
       "name": "Piano L",
-      "group": "instruments",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "instruments"
+      ]
     },
     {
       "id": 22,
       "name": "Piano R",
-      "group": "instruments",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "instruments"
+      ]
     },
     {
       "id": 23,
       "name": "Synthesizer",
-      "group": "instruments",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "instruments"
+      ]
     },
     {
       "id": 24,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 25,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 26,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 27,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 28,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 29,
       "name": "Drum",
-      "group": "instruments",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "instruments"
+      ]
     },
     {
       "id": 30,
       "name": "Drum",
-      "group": "instruments",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "instruments"
+      ]
     },
     {
       "id": 31,
       "name": "",
-      "group": null,
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": []
     },
     {
       "id": 32,
       "name": "Drum",
-      "group": "instruments",
-      "threshold_db": -45.0
+      "threshold_db": -45.0,
+      "groups": [
+        "instruments"
+      ]
     }
   ],
   "groups": {
@@ -216,26 +240,23 @@
       "attack_ms": 200.0,
       "release_ms": 1000.0,
       "color": "#ffd700"
+    },
+    "Pastor": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#ff5577"
     }
   },
   "rules": [
     {
-      "id": "rule_d68f8531",
-      "name": "Idle",
+      "id": "rule_1bfad9ec",
+      "name": "Pastor",
       "priority": 40,
       "enabled": true,
       "conditions": [
         {
-          "group": "singers",
-          "state": "inactive"
-        },
-        {
-          "group": "instruments",
-          "state": "inactive"
-        },
-        {
-          "group": "Leader",
-          "state": "inactive"
+          "group": "Pastor",
+          "state": "active"
         }
       ],
       "actions": [
@@ -243,7 +264,7 @@
           "type": "http_request",
           "method": "",
           "url": "",
-          "body": "idle"
+          "body": "leader"
         }
       ],
       "cooldown_s": 3.0
@@ -255,7 +276,7 @@
       "enabled": true,
       "conditions": [
         {
-          "group": "Leader",
+          "group": "singers",
           "state": "active"
         },
         {
@@ -263,7 +284,7 @@
           "state": "active"
         },
         {
-          "group": "singers",
+          "group": "Leader",
           "state": "active"
         }
       ],
@@ -279,17 +300,17 @@
     },
     {
       "id": "rule_db0d8d5d",
-      "name": "Leader Only",
+      "name": "Leade",
       "priority": 20,
       "enabled": true,
       "conditions": [
         {
-          "group": "Leader",
-          "state": "active"
-        },
-        {
           "group": "singers",
           "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "active"
         }
       ],
       "actions": [
@@ -304,7 +325,7 @@
     },
     {
       "id": "rule_ceca2d59",
-      "name": "Instrument Only",
+      "name": "Instrument",
       "priority": 10,
       "enabled": true,
       "conditions": [
