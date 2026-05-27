@@ -273,6 +273,87 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   border: 1px dashed var(--border-strong);
   border-radius: 10px;
 }
+
+/* Project switcher (header pill + dropdown menu) */
+.project-wrap { position: relative; }
+.project-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.project-pill:hover { border-color: var(--blue); }
+.project-pill .proj-icon { font-size: 13px; }
+.project-pill .proj-caret { font-size: 10px; color: var(--muted); }
+
+.project-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 260px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+  padding: 6px;
+  z-index: 1000;
+}
+.project-menu.hidden { display: none; }
+.project-menu .pm-section {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  padding: 6px 8px 2px;
+}
+.project-menu .pm-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.project-menu .pm-item:hover { background: rgba(255,255,255,0.06); }
+.project-menu .pm-item.current { background: rgba(68,136,255,0.12); color: var(--blue); }
+.project-menu .pm-item .pm-name { flex: 1; font-weight: 600; }
+.project-menu .pm-item .pm-meta { font-size: 10px; color: var(--muted); }
+.project-menu .pm-item-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.project-menu .pm-item-btn:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+.project-menu .pm-item-btn.danger:hover { color: var(--red); }
+.project-menu .pm-divider {
+  height: 1px;
+  background: var(--border-strong);
+  margin: 4px 0;
+}
+.project-menu .pm-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+}
+.project-menu .pm-action:hover { background: rgba(68,136,255,0.10); }
 .vu-wrap {
   width: 30px;
   height: var(--grid-h);

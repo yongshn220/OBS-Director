@@ -56,8 +56,23 @@ async function boot() {
   bindRuntimeToggles();
   bindAddRule();
   bindConnectionsForm();
+  bindProjectPill();
   renderRuntimeToggles();
+  renderProjectPill();
   connectWS();
+}
+
+// Re-fetch config and rebuild every project-scoped view. Called after a
+// project switch so channels/groups/rules reflect the newly active project.
+async function rebuildAll() {
+  await loadConfig();
+  buildMonitor();
+  buildChannelsTable();
+  buildGroups();
+  buildRules();
+  buildConnections();
+  renderRuntimeToggles();
+  renderProjectPill();
 }
 
 async function loadConfig() {
@@ -1218,6 +1233,175 @@ function bindConnectionsForm() {
     await loadConfig();
     buildRules();  // action card shows the URL — refresh
   });
+}
+
+// ── Project switcher ─────────────────────────────────────────────
+function renderProjectPill() {
+  const el = document.getElementById('project-current');
+  if (el) el.textContent = state.config?.current_project || '—';
+}
+
+function bindProjectPill() {
+  const pill = document.getElementById('project-pill');
+  const menu = document.getElementById('project-menu');
+  pill.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!menu.classList.contains('hidden')) {
+      menu.classList.add('hidden');
+      return;
+    }
+    await openProjectMenu();
+  });
+  // Click-away closes the menu
+  document.addEventListener('click', (e) => {
+    if (menu.classList.contains('hidden')) return;
+    if (!menu.contains(e.target) && e.target !== pill) {
+      menu.classList.add('hidden');
+    }
+  });
+}
+
+async function openProjectMenu() {
+  const menu = document.getElementById('project-menu');
+  menu.innerHTML = '<div class="pm-section">불러오는 중…</div>';
+  menu.classList.remove('hidden');
+  let info;
+  try {
+    info = await (await fetch('/api/projects')).json();
+  } catch {
+    menu.innerHTML = '<div class="pm-section">로드 실패</div>';
+    return;
+  }
+  renderProjectMenu(info);
+}
+
+function renderProjectMenu(info) {
+  const menu = document.getElementById('project-menu');
+  const current = info.current;
+  const projects = info.projects || [];
+  menu.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'pm-section';
+  header.textContent = '프로젝트';
+  menu.appendChild(header);
+
+  projects.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'pm-item' + (p.name === current ? ' current' : '');
+
+    const name = document.createElement('span');
+    name.className = 'pm-name';
+    name.textContent = p.name;
+    const meta = document.createElement('span');
+    meta.className = 'pm-meta';
+    meta.textContent = `${p.channel_count}ch · ${p.group_count}g · ${p.rule_count}r`;
+
+    // Activate: clicking the row (not the action buttons) switches.
+    row.addEventListener('click', async (e) => {
+      if (e.target.closest('.pm-item-btn')) return;
+      if (p.name === current) return;
+      await activateProject(p.name);
+    });
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'pm-item-btn';
+    renameBtn.title = '이름 변경';
+    renameBtn.textContent = '✏️';
+    renameBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const next = prompt(`"${p.name}" 의 새 이름:`, p.name);
+      if (!next || next === p.name) return;
+      await renameProject(p.name, next);
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'pm-item-btn danger';
+    delBtn.title = p.name === current ? '활성 프로젝트는 삭제 불가' : '삭제';
+    delBtn.textContent = '🗑';
+    delBtn.disabled = (p.name === current || projects.length <= 1);
+    delBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm(`프로젝트 "${p.name}" 을(를) 삭제할까요?`)) return;
+      await deleteProject(p.name);
+    });
+
+    row.append(name, meta, renameBtn, delBtn);
+    menu.appendChild(row);
+  });
+
+  menu.appendChild(Object.assign(document.createElement('div'), { className: 'pm-divider' }));
+
+  const newEmpty = document.createElement('div');
+  newEmpty.className = 'pm-action';
+  newEmpty.textContent = '＋ 빈 프로젝트 새로 만들기';
+  newEmpty.addEventListener('click', () => createProjectPrompt(false));
+  menu.appendChild(newEmpty);
+
+  const newCopy = document.createElement('div');
+  newCopy.className = 'pm-action';
+  newCopy.textContent = `＋ "${current}" 복제해서 새 프로젝트`;
+  newCopy.addEventListener('click', () => createProjectPrompt(true));
+  menu.appendChild(newCopy);
+}
+
+async function createProjectPrompt(copyFromCurrent) {
+  const name = prompt(copyFromCurrent
+    ? '현재 프로젝트를 복제할 새 이름:'
+    : '새 프로젝트 이름:');
+  if (!name) return;
+  const body = copyFromCurrent
+    ? { name, copy_from: state.config?.current_project }
+    : { name };
+  const res = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    alert('생성 실패: ' + (await res.text()));
+    return;
+  }
+  await openProjectMenu();
+}
+
+async function activateProject(name) {
+  const res = await fetch(`/api/projects/${encodeURIComponent(name)}/activate`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    alert('전환 실패: ' + (await res.text()));
+    return;
+  }
+  document.getElementById('project-menu').classList.add('hidden');
+  await rebuildAll();
+}
+
+async function renameProject(oldName, newName) {
+  const res = await fetch(`/api/projects/${encodeURIComponent(oldName)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_name: newName }),
+  });
+  if (!res.ok) {
+    alert('이름 변경 실패: ' + (await res.text()));
+    return;
+  }
+  // If we renamed the active project the global pointer also changed.
+  await loadConfig();
+  renderProjectPill();
+  await openProjectMenu();
+}
+
+async function deleteProject(name) {
+  const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    alert('삭제 실패: ' + (await res.text()));
+    return;
+  }
+  await openProjectMenu();
 }
 
 boot();

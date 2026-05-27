@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .audio import AudioMonitor
-from .config import ConfigStore
+from .config import ConfigStore, ProjectNameError
 from .groups import GroupEvaluator, rms_to_db
 from .rules import RuleEngine, default_rule, normalize_rule
 
@@ -92,6 +92,69 @@ async def ws_endpoint(ws: WebSocket):
 @app.get("/api/config")
 def get_config():
     return config_store.get()
+
+
+# ── REST: projects ───────────────────────────────────────────────────
+
+@app.get("/api/projects")
+def list_projects():
+    return {
+        "current": config_store.snapshot().get("current_project"),
+        "projects": config_store.list_projects(),
+    }
+
+
+class ProjectCreateBody(BaseModel):
+    name: str
+    copy_from: str | None = None
+
+
+@app.post("/api/projects")
+def create_project(body: ProjectCreateBody):
+    try:
+        name = config_store.create_project(body.name, copy_from=body.copy_from)
+    except ProjectNameError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    return {"name": name}
+
+
+class ProjectRenameBody(BaseModel):
+    new_name: str
+
+
+@app.put("/api/projects/{name}")
+def rename_project(name: str, body: ProjectRenameBody):
+    try:
+        new_name = config_store.rename_project(name, body.new_name)
+    except ProjectNameError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    return {"name": new_name}
+
+
+@app.delete("/api/projects/{name}")
+def delete_project(name: str):
+    try:
+        config_store.delete_project(name)
+    except ProjectNameError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    return {"deleted": name}
+
+
+@app.post("/api/projects/{name}/activate")
+def activate_project(name: str):
+    try:
+        cfg = config_store.activate_project(name)
+    except ProjectNameError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    return cfg
 
 
 class ChannelPatch(BaseModel):
