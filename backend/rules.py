@@ -75,8 +75,9 @@ class RuleEngine:
 
     Transition semantics:
       - When the candidate differs from the currently active rule, switch only
-        if `now - active_since >= active_rule.cooldown_s` (unless the candidate
-        has strictly higher priority, which preempts immediately).
+        if `now - active_since >= active_rule.cooldown_s`. The active rule's
+        cooldown is always honored — priority decides *which* candidate wins
+        among simultaneous matches, but never bypasses an in-progress cooldown.
       - On switch, fire the active rule's http_request actions immediately.
       - While the rule remains active, re-fire those actions every
         `runtime.refire_s` seconds as a self-healing heartbeat (so the
@@ -142,15 +143,14 @@ class RuleEngine:
         else:
             cand_id = candidate["id"]
             if cand_id != self.active_rule_id:
-                # Honor the active rule's cooldown by default, UNLESS the
-                # candidate has strictly higher priority (urgent barge-in).
+                # Honor the active rule's cooldown unconditionally. Priority
+                # picks the candidate among simultaneous matches (see `ordered`
+                # above) but does NOT preempt an in-progress cooldown.
                 allow = True
                 if self.active_rule_id is not None:
                     active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
                     cd = float(active_rule.get("cooldown_s", 0.0)) if active_rule else 0.0
-                    active_pri = int(active_rule.get("priority", 0)) if active_rule else 0
-                    cand_pri = int(candidate.get("priority", 0))
-                    if now - self.active_since < cd and cand_pri <= active_pri:
+                    if now - self.active_since < cd:
                         allow = False
                 if allow:
                     switch_to = candidate
