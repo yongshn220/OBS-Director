@@ -3,15 +3,24 @@ from __future__ import annotations
 import json
 import re
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
+
+
+def new_macro_id() -> str:
+    return "mac_" + uuid.uuid4().hex[:8]
+
+
+def new_transition_id() -> str:
+    return "trn_" + uuid.uuid4().hex[:8]
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 PROJECTS_DIR = CONFIG_PATH.parent / "projects"
 
 # Keys that live inside a project file (per-project setup the user switches
 # between for different services / events).
-PROJECT_KEYS = ("channels", "groups", "rules")
+PROJECT_KEYS = ("channels", "groups", "macros", "transitions", "rules")
 # Keys that stay in the global config.json — hardware/runtime state that
 # applies regardless of which project is active.
 GLOBAL_KEYS = ("audio", "connections", "runtime", "current_project")
@@ -51,11 +60,51 @@ def _default_channels() -> list[dict[str, Any]]:
 
 
 def _empty_project() -> dict[str, Any]:
-    """A fresh project: default channels, seed groups, no rules."""
+    """A fresh project: default channels, seed groups, no rules/macros/transitions."""
     return {
         "channels": _default_channels(),
         "groups": dict(DEFAULT_GROUPS),
+        "macros": [],
+        "transitions": [],
         "rules": [],
+    }
+
+
+def _normalize_macro(m: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a macro entry. camera is kept as-is (str/int/None) so the engine
+    can compare equality; token is the payload POSTed to ASS to fire it."""
+    cam = m.get("camera")
+    if isinstance(cam, str):
+        cam = cam.strip() or None
+    return {
+        "id": str(m.get("id") or new_macro_id()),
+        "name": str(m.get("name") or ""),
+        "token": str(m.get("token") or "").strip(),
+        "camera": cam,
+    }
+
+
+def _to_float(v: Any, default: float) -> float:
+    """float() that tolerates None / '' / junk (dict.get's default only kicks
+    in for ABSENT keys, not present-but-null ones, which appear in hand-edited
+    or exported project files and would otherwise crash normalization)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_transition(t: dict[str, Any], valid_macro_ids: set[str]) -> dict[str, Any]:
+    """Coerce a transition. The deck is filtered to existing macro ids so a
+    deleted macro never lingers as a dangling reference."""
+    deck = [str(mid) for mid in (t.get("deck") or []) if str(mid) in valid_macro_ids]
+    return {
+        "id": str(t.get("id") or new_transition_id()),
+        "name": str(t.get("name") or ""),
+        "deck": deck,
+        "interval_s": _to_float(t.get("interval_s"), 8.0),
+        "jitter_s": _to_float(t.get("jitter_s"), 0.0),
+        "camera_alternate": bool(t.get("camera_alternate", True)),
     }
 
 
@@ -88,14 +137,22 @@ def _default_config() -> dict[str, Any]:
 
 
 def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
-    """Ensure a project dict has all required keys with sane shapes, and
-    migrate legacy single-group channels to the groups-list schema."""
+    """Ensure a project dict has all required keys with sane shapes, migrate
+    legacy single-group channels to the groups-list schema, and keep macro /
+    transition / rule references internally consistent (no dangling ids)."""
     project.setdefault("channels", _default_channels())
     project.setdefault("groups", dict(DEFAULT_GROUPS))
+    project.setdefault("macros", [])
+    project.setdefault("transitions", [])
     project.setdefault("rules", [])
 
-    # Top-up channels list to DEFAULT_CHANNELS so the UI grid is always full
-    existing = {c["id"]: c for c in (project.get("channels") or [])}
+    # Top-up channels list to DEFAULT_CHANNELS so the UI grid is always full.
+    # Drop malformed (non-dict / id-less) entries rather than crashing; the
+    # merge loop rebuilds the full 1..N grid from defaults anyway.
+    existing = {
+        c["id"]: c for c in (project.get("channels") or [])
+        if isinstance(c, dict) and "id" in c
+    }
     merged: list[dict[str, Any]] = []
     for c in _default_channels():
         merged.append(existing.get(c["id"], c))
@@ -113,6 +170,45 @@ def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
                 if g and not (g in seen or seen.add(g))
             ]
     project["channels"] = merged
+
+    # Macros (dedupe ids; keep first wins)
+    macros: list[dict[str, Any]] = []
+    macro_ids: set[str] = set()
+    for m in (project.get("macros") or []):
+        nm = _normalize_macro(m)
+        if nm["id"] in macro_ids:
+            nm["id"] = new_macro_id()
+        macro_ids.add(nm["id"])
+        macros.append(nm)
+    project["macros"] = macros
+
+    # Transitions (deck filtered to existing macros; dedupe ids)
+    transitions: list[dict[str, Any]] = []
+    transition_ids: set[str] = set()
+    for t in (project.get("transitions") or []):
+        nt = _normalize_transition(t, macro_ids)
+        if nt["id"] in transition_ids:
+            nt["id"] = new_transition_id()
+        transition_ids.add(nt["id"])
+        transitions.append(nt)
+    project["transitions"] = transitions
+
+    # Rules: drop transition actions that reference a deleted transition so
+    # the engine never dispatches to a missing target.
+    for rule in (project.get("rules") or []):
+        kept = []
+        for a in (rule.get("actions") or []):
+            # Prune only genuinely DANGLING transition refs (non-empty id that
+            # points at a deleted transition). An empty transition_id is an
+            # intentional "not yet chosen" placeholder — keep it so a freshly
+            # added transition action survives the persist round-trip until the
+            # user picks a target. (The engine no-ops an empty id.)
+            tid = a.get("transition_id")
+            if a.get("type") == "transition" and tid and tid not in transition_ids:
+                continue
+            kept.append(a)
+        rule["actions"] = kept
+
     return project
 
 
@@ -162,6 +258,7 @@ class ConfigStore:
 
         # Resolve project data: existing file > legacy migration > empty.
         proj_path = self._project_path(current)
+        needs_write = False
         if proj_path.exists():
             try:
                 with proj_path.open("r", encoding="utf-8") as f:
@@ -170,9 +267,16 @@ class ConfigStore:
                 project_data = _empty_project()
         elif legacy_project:
             project_data = legacy_project
-            self._write_project_file(current, project_data)
+            needs_write = True
         else:
             project_data = _empty_project()
+            needs_write = True
+
+        # Normalize FIRST, then persist — so a freshly created / migrated
+        # project file is written in its complete shape (macros, transitions,
+        # migrated channels) rather than the raw pre-normalized input.
+        project_data = _normalize_project(project_data)
+        if needs_write:
             self._write_project_file(current, project_data)
 
         # Fill global defaults for anything the file omitted.
@@ -180,8 +284,6 @@ class ConfigStore:
         for k, v in defaults_g.items():
             globals_raw.setdefault(k, v)
         globals_raw["current_project"] = current
-
-        project_data = _normalize_project(project_data)
 
         # Persist globals stripped of any legacy project keys.
         self._write_globals_file(globals_raw)

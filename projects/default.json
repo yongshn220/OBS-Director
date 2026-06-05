@@ -260,39 +260,31 @@
       "color": "#3b8bff"
     }
   },
+  "macros": [],
+  "transitions": [
+    {
+      "id": "trn_e89b701f",
+      "name": "All Rotate",
+      "deck": [],
+      "interval_s": 0.6,
+      "jitter_s": 0.0,
+      "camera_alternate": true
+    }
+  ],
   "rules": [
     {
-      "id": "rule_454fbda8",
-      "name": "None",
+      "id": "rule_4bda2d20",
+      "name": "RotateTest",
       "priority": 50,
       "enabled": true,
-      "conditions": [
-        {
-          "group": "singers",
-          "state": "inactive"
-        },
-        {
-          "group": "instruments",
-          "state": "inactive"
-        },
-        {
-          "group": "Leader",
-          "state": "inactive"
-        },
-        {
-          "group": "Pastor",
-          "state": "inactive"
-        }
-      ],
+      "conditions": [],
       "actions": [
         {
-          "type": "http_request",
-          "method": "",
-          "url": "",
-          "body": "leader"
+          "type": "transition",
+          "transition_id": "trn_e89b701f"
         }
       ],
-      "cooldown_s": 3.0
+      "cooldown_s": 0.0
     },
     {
       "id": "rule_1bfad9ec",

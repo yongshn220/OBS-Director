@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .audio import AudioMonitor
-from .config import ConfigStore, ProjectNameError
+from .config import ConfigStore, ProjectNameError, new_macro_id, new_transition_id
 from .groups import GroupEvaluator, rms_to_db
 from .rules import RuleEngine, default_rule, normalize_rule
 
@@ -223,6 +223,131 @@ def delete_group(name: str):
             gs = ch.get("groups") or []
             if name in gs:
                 ch["groups"] = [g for g in gs if g != name]
+        return data
+    return config_store.update(mutate)
+
+
+# ── REST: macros ─────────────────────────────────────────────────────
+# A macro is a reference to an ASS macro: { id, name, token, camera }.
+# `token` is the payload POSTed to the ASS HTTP server to fire it; `camera`
+# is metadata the rotation engine uses to alternate physical cameras.
+
+class MacroBody(BaseModel):
+    name: str | None = None
+    token: str | None = None
+    camera: str | int | None = None
+
+
+@app.get("/api/macros")
+def list_macros():
+    return config_store.get().get("macros", [])
+
+
+@app.post("/api/macros")
+def create_macro(body: MacroBody):
+    macro = {
+        "id": new_macro_id(),
+        "name": body.name or "",
+        "token": body.token or "",
+        "camera": body.camera,
+    }
+    def mutate(data):
+        data.setdefault("macros", []).append(macro)
+        return data
+    cfg = config_store.update(mutate)
+    return next((m for m in cfg["macros"] if m["id"] == macro["id"]), macro)
+
+
+@app.put("/api/macros/{macro_id}")
+def update_macro(macro_id: str, body: MacroBody):
+    def mutate(data):
+        for m in data.get("macros", []):
+            if m["id"] == macro_id:
+                if body.name is not None:
+                    m["name"] = body.name
+                if body.token is not None:
+                    m["token"] = body.token
+                if body.camera is not None or "camera" in body.model_fields_set:
+                    m["camera"] = body.camera
+                return data
+        raise HTTPException(404, f"macro {macro_id} not found")
+    return config_store.update(mutate)
+
+
+@app.delete("/api/macros/{macro_id}")
+def delete_macro(macro_id: str):
+    def mutate(data):
+        before = len(data.get("macros", []))
+        data["macros"] = [m for m in data.get("macros", []) if m["id"] != macro_id]
+        if len(data["macros"]) == before:
+            raise HTTPException(404, f"macro {macro_id} not found")
+        # _normalize_project strips this id from every transition deck.
+        return data
+    return config_store.update(mutate)
+
+
+# ── REST: transitions ────────────────────────────────────────────────
+# A transition is a rotation policy: a deck of macro ids dealt one per
+# interval (card-deck), with optional camera-alternation.
+
+class TransitionBody(BaseModel):
+    name: str | None = None
+    deck: list[str] | None = None
+    interval_s: float | None = None
+    jitter_s: float | None = None
+    camera_alternate: bool | None = None
+
+
+@app.get("/api/transitions")
+def list_transitions():
+    return config_store.get().get("transitions", [])
+
+
+@app.post("/api/transitions")
+def create_transition(body: TransitionBody):
+    transition = {
+        "id": new_transition_id(),
+        "name": body.name or "",
+        "deck": body.deck or [],
+        "interval_s": 8.0 if body.interval_s is None else body.interval_s,
+        "jitter_s": 0.0 if body.jitter_s is None else body.jitter_s,
+        "camera_alternate": True if body.camera_alternate is None else body.camera_alternate,
+    }
+    def mutate(data):
+        data.setdefault("transitions", []).append(transition)
+        return data
+    cfg = config_store.update(mutate)
+    return next((t for t in cfg["transitions"] if t["id"] == transition["id"]), transition)
+
+
+@app.put("/api/transitions/{transition_id}")
+def update_transition(transition_id: str, body: TransitionBody):
+    def mutate(data):
+        for t in data.get("transitions", []):
+            if t["id"] == transition_id:
+                if body.name is not None:
+                    t["name"] = body.name
+                if body.deck is not None:
+                    t["deck"] = body.deck
+                if body.interval_s is not None:
+                    t["interval_s"] = body.interval_s
+                if body.jitter_s is not None:
+                    t["jitter_s"] = body.jitter_s
+                if body.camera_alternate is not None:
+                    t["camera_alternate"] = body.camera_alternate
+                return data
+        raise HTTPException(404, f"transition {transition_id} not found")
+    return config_store.update(mutate)
+
+
+@app.delete("/api/transitions/{transition_id}")
+def delete_transition(transition_id: str):
+    def mutate(data):
+        before = len(data.get("transitions", []))
+        data["transitions"] = [t for t in data.get("transitions", []) if t["id"] != transition_id]
+        if len(data["transitions"]) == before:
+            raise HTTPException(404, f"transition {transition_id} not found")
+        # _normalize_project prunes rule actions referencing this transition.
         return data
     return config_store.update(mutate)
 

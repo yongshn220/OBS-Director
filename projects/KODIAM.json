@@ -1,0 +1,522 @@
+{
+  "channels": [
+    {
+      "id": 1,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 2,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 3,
+      "name": "Lead Singer",
+      "groups": [
+        "Leader"
+      ],
+      "threshold_db": -48.0
+    },
+    {
+      "id": 4,
+      "name": "Singer 3",
+      "groups": [
+        "singers"
+      ],
+      "threshold_db": -48.0
+    },
+    {
+      "id": 5,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 6,
+      "name": "Singer 2",
+      "groups": [
+        "singers"
+      ],
+      "threshold_db": -48.0
+    },
+    {
+      "id": 7,
+      "name": "Singer 1",
+      "groups": [
+        "singers",
+        "Singer 1"
+      ],
+      "threshold_db": -47.0
+    },
+    {
+      "id": 8,
+      "name": "Singer 4",
+      "groups": [
+        "singers"
+      ],
+      "threshold_db": -51.0
+    },
+    {
+      "id": 9,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 10,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 11,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 12,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 13,
+      "name": "Drum 3",
+      "groups": [
+        "instruments"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 14,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 15,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 16,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 17,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 18,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 19,
+      "name": "Bass Guitar",
+      "groups": [
+        "instruments",
+        "Bass Guitar"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 20,
+      "name": "Bass Guitar",
+      "groups": [
+        "instruments",
+        "Bass Guitar"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 21,
+      "name": "Piano 1",
+      "groups": [
+        "instruments",
+        "Piano"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 22,
+      "name": "Piano 2",
+      "groups": [
+        "instruments",
+        "Piano"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 23,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 24,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 25,
+      "name": "Electric Guitar 1",
+      "groups": [
+        "instruments",
+        "Electric Guitar"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 26,
+      "name": "Electric Guitar 2",
+      "groups": [
+        "instruments",
+        "Electric Guitar"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 27,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 28,
+      "name": "",
+      "groups": [],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 29,
+      "name": "Drum 1",
+      "groups": [
+        "instruments",
+        "Drum"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 30,
+      "name": "Drum 4",
+      "groups": [
+        "instruments",
+        "Drum"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 31,
+      "name": "Drum 2",
+      "groups": [
+        "instruments",
+        "Drum"
+      ],
+      "threshold_db": -45.0
+    },
+    {
+      "id": 32,
+      "name": "Drum 3",
+      "groups": [
+        "instruments",
+        "Drum"
+      ],
+      "threshold_db": -45.0
+    }
+  ],
+  "groups": {
+    "singers": {
+      "attack_ms": 200,
+      "release_ms": 1500,
+      "color": "#00ff88"
+    },
+    "instruments": {
+      "attack_ms": 150,
+      "release_ms": 800,
+      "color": "#4488ff"
+    },
+    "pastor": {
+      "attack_ms": 150,
+      "release_ms": 1200,
+      "color": "#ffd700"
+    },
+    "Leader": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#ff5577"
+    },
+    "Drum": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#a8e63a"
+    },
+    "Piano": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#a8e63a"
+    },
+    "Electric Guitar": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#00bd9b"
+    },
+    "Bass Guitar": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#00bd9b"
+    },
+    "Singer 1": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#9b5cff"
+    },
+    "Singer 2": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#9b5cff"
+    },
+    "Singer 3": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#9b5cff"
+    },
+    "Singer 4": {
+      "attack_ms": 200.0,
+      "release_ms": 1000.0,
+      "color": "#9b5cff"
+    }
+  },
+  "rules": [
+    {
+      "id": "rule_b6f02d3d",
+      "name": "Lead Singer",
+      "priority": 70,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Leader",
+          "state": "active"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "leader"
+        }
+      ],
+      "cooldown_s": 3.0
+    },
+    {
+      "id": "rule_6b8da223",
+      "name": "Electric Guitar",
+      "priority": 60,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Electric Guitar",
+          "state": "active"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "electric-guitar"
+        }
+      ],
+      "cooldown_s": 3.0
+    },
+    {
+      "id": "rule_129746d2",
+      "name": "Piano",
+      "priority": 50,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Piano",
+          "state": "active"
+        },
+        {
+          "group": "Drum",
+          "state": "inactive"
+        },
+        {
+          "group": "Electric Guitar",
+          "state": "inactive"
+        },
+        {
+          "group": "Bass Guitar",
+          "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "piano"
+        }
+      ],
+      "cooldown_s": 3.0
+    },
+    {
+      "id": "rule_12c01052",
+      "name": "Drum",
+      "priority": 40,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Drum",
+          "state": "active"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        },
+        {
+          "group": "Electric Guitar",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "drum"
+        }
+      ],
+      "cooldown_s": 3.0
+    },
+    {
+      "id": "rule_2e808698",
+      "name": "Bass Guitar",
+      "priority": 30,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "Bass Guitar",
+          "state": "active"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        },
+        {
+          "group": "singers",
+          "state": "inactive"
+        },
+        {
+          "group": "Electric Guitar",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "bass-guitar"
+        }
+      ],
+      "cooldown_s": 2.0
+    },
+    {
+      "id": "rule_61272f78",
+      "name": "Full Session",
+      "priority": 20,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "singers",
+          "state": "active"
+        },
+        {
+          "group": "instruments",
+          "state": "active"
+        },
+        {
+          "group": "Leader",
+          "state": "active"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "all"
+        }
+      ],
+      "cooldown_s": 3.0
+    },
+    {
+      "id": "rule_59da33e0",
+      "name": "none",
+      "priority": 10,
+      "enabled": true,
+      "conditions": [
+        {
+          "group": "singers",
+          "state": "inactive"
+        },
+        {
+          "group": "instruments",
+          "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        }
+      ],
+      "actions": [
+        {
+          "type": "http_request",
+          "method": "",
+          "url": "",
+          "body": "none"
+        }
+      ],
+      "cooldown_s": 3.0
+    }
+  ]
+}

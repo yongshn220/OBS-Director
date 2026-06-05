@@ -49,12 +49,15 @@ async function boot() {
   buildMonitor();
   buildChannelsTable();
   buildGroups();
+  buildMacros();
+  buildTransitions();
   buildRules();
   buildConnections();
   bindTabs();
   bindGroupAdd();
   bindRuntimeToggles();
   bindAddRule();
+  bindShotButtons();
   bindConnectionsForm();
   bindProjectPill();
   renderRuntimeToggles();
@@ -63,12 +66,15 @@ async function boot() {
 }
 
 // Re-fetch config and rebuild every project-scoped view. Called after a
-// project switch so channels/groups/rules reflect the newly active project.
+// project switch so channels/groups/macros/transitions/rules reflect the
+// newly active project.
 async function rebuildAll() {
   await loadConfig();
   buildMonitor();
   buildChannelsTable();
   buildGroups();
+  buildMacros();
+  buildTransitions();
   buildRules();
   buildConnections();
   renderRuntimeToggles();
@@ -956,7 +962,7 @@ function renderRuleCard(rule) {
   condSection.appendChild(condLabel);
   condSection.appendChild(renderConditionPills(rule));
 
-  // Actions section — HTTP-only.
+  // Actions section — transition (primary) + http_request (escape hatch).
   const actSection = document.createElement('div');
   actSection.className = 'rule-section';
   const actLabel = document.createElement('div');
@@ -964,28 +970,40 @@ function renderRuleCard(rule) {
   const assUrl = state.config.connections?.ass_http?.url || '';
   const assMethod = state.config.connections?.ass_http?.method || 'POST';
   actLabel.innerHTML = assUrl
-    ? `THEN — 매칭 시 호출  &nbsp;<span class="ass-url-readonly">${assMethod} ${escapeHtml(assUrl)}</span>`
+    ? `THEN — 매칭 시 실행  &nbsp;<span class="ass-url-readonly">${assMethod} ${escapeHtml(assUrl)}</span>`
     : `THEN — <span style="color:var(--yellow)">Connections 탭에서 ASS HTTP URL을 먼저 설정하세요</span>`;
   actSection.appendChild(actLabel);
 
   const actRows = document.createElement('div');
   (rule.actions || []).forEach((a, i) => {
-    if (a.type === 'http_request') {
+    if (a.type === 'transition') {
+      actRows.appendChild(renderTransitionActionCard(rule, a, i));
+    } else if (a.type === 'http_request') {
       actRows.appendChild(renderHttpActionCard(rule, a, i));
     }
   });
   actSection.appendChild(actRows);
 
-  const addBtn = document.createElement('button');
-  addBtn.className = 'btn small';
-  addBtn.textContent = '+ 액션 추가';
-  addBtn.style.marginTop = '8px';
-  addBtn.addEventListener('click', async () => {
+  const addRow = document.createElement('div');
+  addRow.className = 'action-add-row';
+  const addTrans = document.createElement('button');
+  addTrans.className = 'btn small primary';
+  addTrans.textContent = '+ 트랜지션';
+  addTrans.addEventListener('click', async () => {
+    const next = [...(rule.actions || []), { type: 'transition', transition_id: '' }];
+    await updateRule(rule.id, {actions: next });
+    buildRules();
+  });
+  const addHttp = document.createElement('button');
+  addHttp.className = 'btn small';
+  addHttp.textContent = '+ HTTP (직접)';
+  addHttp.addEventListener('click', async () => {
     const next = [...(rule.actions || []), { type: 'http_request', body: '' }];
     await updateRule(rule.id, {actions: next });
     buildRules();
   });
-  actSection.appendChild(addBtn);
+  addRow.append(addTrans, addHttp);
+  actSection.appendChild(addRow);
 
   // Cooldown
   const cdRow = document.createElement('div');
@@ -1145,6 +1163,298 @@ function renderConditionRow(rule, cond, idx) {
 
   row.append(glue, groupSel, isText, stateSel, delBtn);
   return row;
+}
+
+// Small text-input helper (re-added; the old generic one was removed with the
+// legacy action editor).
+function textInput(placeholder, value) {
+  const i = document.createElement('input');
+  i.type = 'text';
+  i.placeholder = placeholder;
+  i.value = value || '';
+  return i;
+}
+
+// ── Macros / Transitions: shared API + view refresh ───────────────
+async function apiSend(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    alert('실패: ' + (await res.text()));
+    throw new Error('api ' + res.status);
+  }
+  return res.status === 200 ? res.json().catch(() => null) : null;
+}
+
+// Macros/transitions/rules are interdependent (macro→deck→rule), so a change
+// to any of them refreshes all three editors plus the monitor pills.
+async function refreshShotViews() {
+  await loadConfig();
+  buildMacros();
+  buildTransitions();
+  buildRules();
+}
+
+function bindShotButtons() {
+  const am = document.getElementById('add-macro-btn');
+  if (am) am.addEventListener('click', createMacro);
+  const at = document.getElementById('add-transition-btn');
+  if (at) at.addEventListener('click', createTransition);
+}
+
+async function createMacro() {
+  await apiSend('POST', '/api/macros', { name: '', token: '', camera: '' });
+  await refreshShotViews();
+}
+async function updateMacro(id, patch) {
+  await apiSend('PUT', `/api/macros/${encodeURIComponent(id)}`, patch);
+  await refreshShotViews();
+}
+async function deleteMacro(id) {
+  await apiSend('DELETE', `/api/macros/${encodeURIComponent(id)}`);
+  await refreshShotViews();
+}
+async function createTransition() {
+  await apiSend('POST', '/api/transitions',
+    { name: '', deck: [], interval_s: 8, jitter_s: 0, camera_alternate: true });
+  await refreshShotViews();
+}
+async function updateTransition(id, patch) {
+  await apiSend('PUT', `/api/transitions/${encodeURIComponent(id)}`, patch);
+  await refreshShotViews();
+}
+async function deleteTransition(id) {
+  await apiSend('DELETE', `/api/transitions/${encodeURIComponent(id)}`);
+  await refreshShotViews();
+}
+
+// ── Macros tab ────────────────────────────────────────────────────
+function buildMacros() {
+  const root = document.getElementById('macros-table');
+  if (!root) return;
+  root.innerHTML = '';
+  const macros = state.config.macros || [];
+  if (!macros.length) {
+    root.innerHTML = '<div class="empty-hint">아직 매크로가 없습니다. 아래 버튼으로 추가하세요.</div>';
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'macro-row macro-head';
+  head.innerHTML =
+    '<span>샷 이름</span><span>토큰 (ASS로 보낼 payload)</span><span>카메라</span><span></span>';
+  root.appendChild(head);
+  macros.forEach(m => root.appendChild(renderMacroRow(m)));
+}
+
+function renderMacroRow(m) {
+  const row = document.createElement('div');
+  row.className = 'macro-row';
+
+  const name = textInput('예: Person A', m.name || '');
+  name.addEventListener('change', () => updateMacro(m.id, { name: name.value }));
+
+  const token = textInput('예: personA', m.token || '');
+  token.addEventListener('change', () => updateMacro(m.id, { token: token.value }));
+
+  const cam = document.createElement('input');
+  cam.type = 'text';
+  cam.className = 'macro-cam';
+  cam.placeholder = '1';
+  cam.value = (m.camera === null || m.camera === undefined) ? '' : String(m.camera);
+  cam.addEventListener('change', () => updateMacro(m.id, { camera: cam.value }));
+
+  const del = document.createElement('button');
+  del.className = 'btn small danger';
+  del.textContent = '삭제';
+  del.addEventListener('click', async () => {
+    if (!confirm(`매크로 "${m.name || m.token || m.id}" 삭제? (덱에서도 빠집니다)`)) return;
+    await deleteMacro(m.id);
+  });
+
+  row.append(name, token, cam, del);
+  return row;
+}
+
+// ── Transitions tab ───────────────────────────────────────────────
+function buildTransitions() {
+  const root = document.getElementById('transitions-list');
+  if (!root) return;
+  root.innerHTML = '';
+  const transitions = state.config.transitions || [];
+  if (!transitions.length) {
+    root.innerHTML = '<div class="empty-hint">아직 트랜지션이 없습니다. 아래 버튼으로 추가하세요.</div>';
+    return;
+  }
+  transitions.forEach(t => root.appendChild(renderTransitionCard(t)));
+}
+
+function renderTransitionCard(t) {
+  const macros = state.config.macros || [];
+  const macroById = Object.fromEntries(macros.map(m => [m.id, m]));
+  const card = document.createElement('div');
+  card.className = 'transition-card';
+
+  // Header: name + delete
+  const head = document.createElement('div');
+  head.className = 'transition-head';
+  const name = textInput('트랜지션 이름 (예: All Rotate)', t.name || '');
+  name.className = 'transition-name';
+  name.addEventListener('change', () => updateTransition(t.id, { name: name.value }));
+  const del = document.createElement('button');
+  del.className = 'btn small danger';
+  del.textContent = '삭제';
+  del.addEventListener('click', async () => {
+    if (!confirm(`트랜지션 "${t.name || t.id}" 삭제? (이 트랜지션을 쓰는 룰 액션에서도 빠집니다)`)) return;
+    await deleteTransition(t.id);
+  });
+  head.append(name, del);
+
+  // Deck: macro chips + add dropdown
+  const deckLabel = document.createElement('div');
+  deckLabel.className = 'deck-label';
+  deckLabel.textContent = `덱 (${(t.deck || []).length}장) — 간격마다 한 장씩, 소진 후 재셔플`;
+
+  const deckWrap = document.createElement('div');
+  deckWrap.className = 'deck-wrap';
+  (t.deck || []).forEach((mid, i) => {
+    const m = macroById[mid];
+    const chip = document.createElement('span');
+    chip.className = 'deck-chip' + (m ? '' : ' missing');
+    const label = document.createElement('span');
+    label.className = 'dc-name';
+    label.textContent = m ? (m.name || m.token || mid) : '(삭제됨)';
+    chip.appendChild(label);
+    if (m && m.camera !== null && m.camera !== undefined && m.camera !== '') {
+      const camTag = document.createElement('span');
+      camTag.className = 'dc-cam';
+      camTag.textContent = 'cam' + m.camera;
+      chip.appendChild(camTag);
+    }
+    const x = document.createElement('button');
+    x.className = 'dc-x';
+    x.textContent = '×';
+    x.title = '덱에서 제거';
+    x.addEventListener('click', () => {
+      const next = (t.deck || []).slice();
+      next.splice(i, 1);
+      updateTransition(t.id, { deck: next });
+    });
+    chip.appendChild(x);
+    deckWrap.appendChild(chip);
+  });
+
+  if (macros.length) {
+    const add = document.createElement('select');
+    add.className = 'deck-add';
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '+ 매크로';
+    add.appendChild(ph);
+    macros.forEach(m => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      const cam = (m.camera !== null && m.camera !== undefined && m.camera !== '') ? ` (cam${m.camera})` : '';
+      o.textContent = (m.name || m.token || m.id) + cam;
+      add.appendChild(o);
+    });
+    add.addEventListener('change', () => {
+      if (!add.value) return;
+      const next = [...(t.deck || []), add.value];
+      updateTransition(t.id, { deck: next });
+    });
+    deckWrap.appendChild(add);
+  } else {
+    const warn = document.createElement('span');
+    warn.className = 'deck-warn';
+    warn.textContent = '먼저 Macros 탭에서 매크로를 만드세요.';
+    deckWrap.appendChild(warn);
+  }
+
+  // Params: interval, jitter, camera alternate
+  const params = document.createElement('div');
+  params.className = 'transition-params';
+  params.appendChild(paramNum('로테이션 간격', t.interval_s ?? 8, 0, 120, 0.5, 's',
+    v => updateTransition(t.id, { interval_s: v })));
+  params.appendChild(paramNum('지터 ±', t.jitter_s ?? 0, 0, 30, 0.5, 's',
+    v => updateTransition(t.id, { jitter_s: v })));
+  const altLabel = document.createElement('label');
+  altLabel.className = 'alt-toggle';
+  const alt = document.createElement('input');
+  alt.type = 'checkbox';
+  alt.checked = t.camera_alternate !== false;
+  alt.addEventListener('change', () => updateTransition(t.id, { camera_alternate: alt.checked }));
+  altLabel.append(alt, document.createTextNode(' 카메라 교대'));
+  params.appendChild(altLabel);
+
+  const hint = document.createElement('div');
+  hint.className = 'transition-hint';
+  hint.textContent = (t.interval_s ?? 8) <= 0
+    ? '간격 0 = 회전 없음 (덱 첫 장을 정적으로 유지)'
+    : '';
+
+  card.append(head, deckLabel, deckWrap, params, hint);
+  return card;
+}
+
+function paramNum(label, value, min, max, step, unit, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'param-num';
+  const l = document.createElement('span');
+  l.className = 'param-label';
+  l.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'number';
+  inp.min = String(min); inp.max = String(max); inp.step = String(step);
+  inp.value = String(value);
+  inp.addEventListener('change', () => onChange(parseFloat(inp.value)));
+  const u = document.createElement('span');
+  u.className = 'param-unit';
+  u.textContent = unit;
+  wrap.append(l, inp, u);
+  return wrap;
+}
+
+// Rule action card: pick a transition from the library.
+function renderTransitionActionCard(rule, action, idx) {
+  const card = document.createElement('div');
+  card.className = 'transition-action-card';
+  const transitions = state.config.transitions || [];
+
+  const sel = document.createElement('select');
+  sel.className = 'transition-action-sel';
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = transitions.length ? '트랜지션 선택…' : '(트랜지션 없음 — Transitions 탭에서 먼저 생성)';
+  sel.appendChild(ph);
+  transitions.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.id;
+    o.textContent = `${t.name || '(이름 없음)'} · ${(t.deck || []).length}장 · ${t.interval_s}s`;
+    sel.appendChild(o);
+  });
+  sel.value = action.transition_id || '';
+  sel.addEventListener('change', () => {
+    const next = (rule.actions || []).slice();
+    next[idx] = { type: 'transition', transition_id: sel.value };
+    updateRule(rule.id, { actions: next });
+  });
+
+  const del = document.createElement('button');
+  del.className = 'btn small danger';
+  del.textContent = '×';
+  del.title = '이 액션 삭제';
+  del.addEventListener('click', async () => {
+    const next = (rule.actions || []).slice();
+    next.splice(idx, 1);
+    await updateRule(rule.id, { actions: next });
+    buildRules();
+  });
+
+  card.append(sel, del);
+  return card;
 }
 
 // Simplified action card: body-only. The URL/method come from the global

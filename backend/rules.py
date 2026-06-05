@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 import urllib.error
@@ -31,8 +32,10 @@ def default_rule() -> dict[str, Any]:
 def normalize_rule(rule: dict[str, Any]) -> dict[str, Any]:
     """Ensure the rule has all required fields with valid types.
 
-    Only `http_request` actions are supported; any other action type is
-    dropped silently.
+    Supported action types:
+      - http_request : low-level POST/GET to the ASS HTTP server (escape hatch)
+      - transition   : activate a rotation (deck of macros) while the rule holds
+    Any other action type is dropped silently.
     """
     r = {
         "id": rule.get("id") or new_rule_id(),
@@ -49,52 +52,67 @@ def normalize_rule(rule: dict[str, Any]) -> dict[str, Any]:
             "state": "active" if c.get("state") == "active" else "inactive",
         })
     for a in rule.get("actions") or []:
-        if a.get("type") != "http_request":
-            continue  # unsupported action types are dropped silently
-        # method/url are stored as "" when omitted so _dispatch can fall
-        # back to connections.ass_http (the simplified UI relies on this).
-        raw_method = (a.get("method") or "").upper().strip()
-        method = raw_method if raw_method in ("GET", "POST") else ""
-        r["actions"].append({
-            "type": "http_request",
-            "method": method,
-            "url": str(a.get("url", "")).strip(),
-            "body": str(a.get("body") or ""),
-        })
+        t = a.get("type")
+        if t == "http_request":
+            # method/url are stored as "" when omitted so _dispatch can fall
+            # back to connections.ass_http (the simplified UI relies on this).
+            raw_method = (a.get("method") or "").upper().strip()
+            method = raw_method if raw_method in ("GET", "POST") else ""
+            r["actions"].append({
+                "type": "http_request",
+                "method": method,
+                "url": str(a.get("url", "")).strip(),
+                "body": str(a.get("body") or ""),
+            })
+        elif t == "transition":
+            r["actions"].append({
+                "type": "transition",
+                "transition_id": str(a.get("transition_id") or ""),
+            })
+        # unknown action types are dropped silently
     return r
 
 
 class RuleEngine:
-    """Evaluates rules against group activity each tick.
+    """Evaluates rules against group activity each tick and drives output.
 
     Match semantics:
       - Rules walked in descending priority order.
       - First enabled rule whose ALL conditions are satisfied is the candidate.
       - Empty conditions list ⇒ always satisfied (catch-all rule).
-      - Condition: group must currently be in the specified state (active/inactive).
+      - Condition: group must currently be in the specified state.
 
-    Transition semantics:
-      - When the candidate differs from the currently active rule, switch only
-        if `now - active_since >= active_rule.cooldown_s`. The active rule's
-        cooldown is always honored — priority decides *which* candidate wins
-        among simultaneous matches, but never bypasses an in-progress cooldown.
-      - On switch, fire the active rule's http_request actions immediately.
-      - While the rule remains active, re-fire those actions every
-        `runtime.refire_s` seconds as a self-healing heartbeat (so the
-        downstream HTTP target self-recovers from restarts / dropped packets).
-        Set refire_s to 0 to disable and keep only the one-shot transition fire.
+    Switch semantics:
+      - When the candidate differs from the active rule, switch only if
+        `now - active_since >= active_rule.cooldown_s`. Cooldown is always
+        honored; priority only decides which candidate wins among simultaneous
+        matches, never bypasses an in-progress cooldown.
+
+    Output semantics (per active rule's actions):
+      - http_request : fired once on switch, then re-fired every `refire_s`
+        as a self-healing heartbeat.
+      - transition   : drives a macro rotation. Each rotation tick draws the
+        next macro from the deck (camera-aware: avoid two consecutive shots on
+        the same PTZ camera so the incoming camera is always off-air while it
+        repositions) and POSTs that macro's token. The deck is a card-deck —
+        every macro is dealt once before the deck reshuffles. The current
+        macro's token is also re-fired every `refire_s` for reliability.
     """
 
     LOG_MAX = 100
     DEFAULT_REFIRE_S = 3.0
+    DEFAULT_INTERVAL_S = 8.0
 
     def __init__(self, config_store):
         self.config_store = config_store
         self.active_rule_id: str | None = None
         self.active_since: float = 0.0
-        # rule_id -> next monotonic time at which a refire should fire.
-        # Populated on transition; cleared on release/switch.
+        # rule_id -> next monotonic time at which an http_request refire fires.
         self._refire_at: dict[str, float] = {}
+        # Rotation state for the active transition rule, or None. Shape:
+        #   {rule_id, transition_id, deck_remaining[list], current_macro_id,
+        #    current_camera, next_at, refire_at}
+        self._rotation: dict[str, Any] | None = None
         self._action_log: deque[dict[str, Any]] = deque(maxlen=self.LOG_MAX)
 
     # ── Public ────────────────────────────────────────────────────
@@ -117,35 +135,26 @@ class RuleEngine:
                 "reason": "manual",
             }
 
-        # Sort enabled rules by priority desc, original order as tiebreaker
         ordered = sorted(
             [r for r in rules if r.get("enabled", True)],
             key=lambda r: (-int(r.get("priority", 0)),),
         )
-
-        # Find ALL matching rules in priority order — used both for the
-        # active-rule decision and for the live "match queue" UI.
         matching = [r for r in ordered if self._match(r, group_states)]
         candidate = matching[0] if matching else None
         fired: list[dict[str, Any]] = []
 
-        # Decide whether to switch
+        # Decide whether to switch.
         switch_to: dict[str, Any] | None = None
         if candidate is None:
-            # No match → if currently active, only release after cooldown
             if self.active_rule_id is not None:
                 active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
                 cooldown = float(active_rule.get("cooldown_s", 0.0)) if active_rule else 0.0
                 if now - self.active_since >= cooldown:
-                    self._refire_at.pop(self.active_rule_id, None)
-                    self.active_rule_id = None
+                    self._release_active()
                     self.active_since = now
         else:
             cand_id = candidate["id"]
             if cand_id != self.active_rule_id:
-                # Honor the active rule's cooldown unconditionally. Priority
-                # picks the candidate among simultaneous matches (see `ordered`
-                # above) but does NOT preempt an in-progress cooldown.
                 allow = True
                 if self.active_rule_id is not None:
                     active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
@@ -156,33 +165,41 @@ class RuleEngine:
                     switch_to = candidate
 
         if switch_to is not None:
-            # If we were holding a different rule, drop its refire schedule.
             if self.active_rule_id is not None and self.active_rule_id != switch_to["id"]:
                 self._refire_at.pop(self.active_rule_id, None)
+            self._rotation = None  # force rotation re-init for the new rule
             self.active_rule_id = switch_to["id"]
             self.active_since = now
             for action in switch_to.get("actions", []):
                 if action["type"] == "http_request":
                     fired.append(self._fire(switch_to, action, dry_run, now, "transition"))
-            # Arm the refire heartbeat (disabled when refire_s <= 0).
             if refire_s > 0:
                 self._refire_at[switch_to["id"]] = now + refire_s
 
-        # Refire heartbeat: while the rule is held, re-fire its http_request
-        # actions every refire_s seconds so the downstream target self-heals.
-        if self.active_rule_id is not None and refire_s > 0:
-            next_at = self._refire_at.get(self.active_rule_id)
-            if next_at is None:
-                # Just-activated rules already armed above; this covers rules
-                # that became active before refire_s was set (config edit).
-                self._refire_at[self.active_rule_id] = now + refire_s
-            elif now >= next_at:
-                active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
-                if active_rule is not None:
-                    for action in active_rule.get("actions", []):
-                        if action["type"] == "http_request":
-                            fired.append(self._fire(active_rule, action, dry_run, now, "refire"))
-                self._refire_at[self.active_rule_id] = now + refire_s
+        # Drive the active rule's output (http refire + transition rotation).
+        if self.active_rule_id is not None:
+            active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
+            if active_rule is None:
+                # Rule was deleted while active.
+                self._release_active()
+            else:
+                # http_request refire heartbeat
+                if refire_s > 0:
+                    next_at = self._refire_at.get(self.active_rule_id)
+                    if next_at is None:
+                        self._refire_at[self.active_rule_id] = now + refire_s
+                    elif now >= next_at:
+                        for action in active_rule.get("actions", []):
+                            if action["type"] == "http_request":
+                                fired.append(self._fire(active_rule, action, dry_run, now, "refire"))
+                        self._refire_at[self.active_rule_id] = now + refire_s
+
+                # transition rotation
+                transition = self._resolve_transition(cfg, active_rule)
+                if transition is not None:
+                    self._tick_rotation(active_rule, transition, cfg, now, dry_run, refire_s, fired)
+                else:
+                    self._rotation = None
 
         active_name = None
         active_rule_cooldown_remaining = None
@@ -192,13 +209,7 @@ class RuleEngine:
                 active_name = active_rule.get("name")
                 cd = float(active_rule.get("cooldown_s", 0.0))
                 active_rule_cooldown_remaining = max(0.0, cd - (now - self.active_since))
-            else:
-                # Rule was deleted while active
-                self._refire_at.pop(self.active_rule_id, None)
-                self.active_rule_id = None
 
-        # Build the live "match queue" — every rule currently matching,
-        # priority desc, with a brief preview of what each would do.
         queue: list[dict[str, Any]] = []
         for r in matching:
             queue.append({
@@ -206,7 +217,7 @@ class RuleEngine:
                 "name": r.get("name"),
                 "priority": int(r.get("priority", 0)),
                 "is_active": r["id"] == self.active_rule_id,
-                "preview": self._next_action_preview(r),
+                "preview": self._next_action_preview(cfg, r),
             })
 
         return {
@@ -216,6 +227,7 @@ class RuleEngine:
                 round(active_rule_cooldown_remaining, 2)
                 if active_rule_cooldown_remaining is not None else None
             ),
+            "active_macro": (self._rotation or {}).get("current_macro_id"),
             "fired": fired,
             "dry_run": dry_run,
             "matching": queue,
@@ -225,13 +237,9 @@ class RuleEngine:
         return list(self._action_log)[-limit:]
 
     def fire_manual(self, rule_id: str) -> dict[str, Any]:
-        """Fire a rule's actions immediately, ignoring its conditions.
-
-        Used by the UI's per-rule "Run" button so users can verify the HTTP
-        wiring without having to physically trigger the audio condition.
-        Honors `runtime.dry_run`. Does NOT update active_rule_id — manual
-        fires are isolated from the engine's state machine.
-        """
+        """Fire a rule's actions immediately, ignoring its conditions (for the
+        UI "Run" test button). Honors dry_run; does NOT touch engine state.
+        For a transition action, fires the first valid macro's token once."""
         cfg = self.config_store.snapshot()
         rule = next((r for r in (cfg.get("rules") or []) if r["id"] == rule_id), None)
         if rule is None:
@@ -239,12 +247,29 @@ class RuleEngine:
         dry_run = bool((cfg.get("runtime") or {}).get("dry_run", True))
         now = time.monotonic()
         fired: list[dict[str, Any]] = []
+        macro_index = self._macro_index(cfg)
         for action in rule.get("actions", []):
             if action["type"] == "http_request":
                 fired.append(self._fire(rule, action, dry_run, now, cause="manual"))
+            elif action["type"] == "transition":
+                transition = self._resolve_transition(cfg, rule)
+                if transition is None:
+                    continue
+                macro = next(
+                    (macro_index[mid] for mid in transition.get("deck", []) if mid in macro_index),
+                    None,
+                )
+                if macro is not None:
+                    fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "manual"))
         return {"rule_id": rule_id, "rule_name": rule.get("name"), "fired": fired, "dry_run": dry_run}
 
-    # ── Internal ──────────────────────────────────────────────────
+    # ── Internal: state ───────────────────────────────────────────
+
+    def _release_active(self) -> None:
+        if self.active_rule_id is not None:
+            self._refire_at.pop(self.active_rule_id, None)
+        self.active_rule_id = None
+        self._rotation = None
 
     def _match(self, rule: dict[str, Any], group_states: dict[str, dict[str, Any]]) -> bool:
         conditions = rule.get("conditions") or []
@@ -260,20 +285,132 @@ class RuleEngine:
                 return False
         return True
 
+    # ── Internal: transitions / rotation ──────────────────────────
+
+    @staticmethod
+    def _resolve_transition(cfg: dict[str, Any], rule: dict[str, Any]) -> dict[str, Any] | None:
+        tid = None
+        for a in rule.get("actions", []):
+            if a.get("type") == "transition" and a.get("transition_id"):
+                tid = a["transition_id"]
+                break
+        if not tid:
+            return None
+        for t in cfg.get("transitions") or []:
+            if t.get("id") == tid:
+                return t
+        return None
+
+    @staticmethod
+    def _macro_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {m["id"]: m for m in (cfg.get("macros") or []) if m.get("id")}
+
+    def _interval(self, transition: dict[str, Any]) -> float:
+        base = float(transition.get("interval_s", self.DEFAULT_INTERVAL_S))
+        if base <= 0:
+            return 0.0  # 0 ⇒ no rotation (static single shot)
+        jit = float(transition.get("jitter_s", 0.0))
+        if jit > 0:
+            base = base + random.uniform(-jit, jit)
+        return max(0.5, base)
+
+    def _draw_next(self, rot: dict[str, Any], transition: dict[str, Any],
+                   macro_index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+        """Draw the next macro from the deck without replacement (card-deck).
+
+        Camera-aware: prefer a macro whose camera differs from the currently
+        on-air one so the incoming camera is off-air while it repositions.
+        Falls back to same-camera only when the remaining deck offers nothing
+        else (best-effort). Reshuffles by refilling when the deck is exhausted,
+        carrying the no-immediate-repeat rule across the reset boundary.
+        """
+        deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
+        if not deck:
+            return None
+        remaining = rot.get("deck_remaining") or []
+        # Drop any entries that became invalid (macro deleted mid-cycle).
+        remaining = [mid for mid in remaining if mid in macro_index]
+        if not remaining:
+            remaining = list(deck)  # reshuffle = refill the deck
+
+        prev_cam = rot.get("current_camera")
+        if transition.get("camera_alternate", True):
+            diff = [mid for mid in remaining if macro_index[mid].get("camera") != prev_cam]
+            pool = diff or remaining
+        else:
+            pool = remaining
+
+        choice = random.choice(pool)
+        remaining.remove(choice)
+        rot["deck_remaining"] = remaining
+        macro = macro_index[choice]
+        rot["current_macro_id"] = choice
+        rot["current_camera"] = macro.get("camera")
+        return macro
+
+    def _tick_rotation(self, rule: dict[str, Any], transition: dict[str, Any],
+                       cfg: dict[str, Any], now: float, dry_run: bool,
+                       refire_s: float, fired: list[dict[str, Any]]) -> None:
+        macro_index = self._macro_index(cfg)
+        rot = self._rotation
+        need_init = (
+            rot is None
+            or rot.get("rule_id") != rule["id"]
+            or rot.get("transition_id") != transition.get("id")
+        )
+
+        def schedule_after_fire() -> None:
+            interval = self._interval(transition)
+            rot["next_at"] = (now + interval) if interval > 0 else float("inf")
+            rot["refire_at"] = (now + refire_s) if refire_s > 0 else float("inf")
+
+        if need_init:
+            self._rotation = rot = {
+                "rule_id": rule["id"],
+                "transition_id": transition.get("id"),
+                "deck_remaining": [],
+                "current_macro_id": None,
+                "current_camera": None,
+                "next_at": now,
+                "refire_at": now,
+            }
+            macro = self._draw_next(rot, transition, macro_index)
+            if macro is not None:
+                fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
+            schedule_after_fire()
+            return
+
+        if now >= rot["next_at"]:
+            macro = self._draw_next(rot, transition, macro_index)
+            if macro is not None:
+                fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
+            schedule_after_fire()
+        elif refire_s > 0 and now >= rot["refire_at"]:
+            mid = rot.get("current_macro_id")
+            macro = macro_index.get(mid) if mid else None
+            if macro is not None:
+                fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "refire"))
+            rot["refire_at"] = now + refire_s
+
+    # ── Internal: firing / dispatch ───────────────────────────────
+
     def _fire(self, rule: dict[str, Any], action: dict[str, Any],
-              dry_run: bool, now: float, cause: str) -> dict[str, Any]:
+              dry_run: bool, now: float, cause: str,
+              detail: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         evt = {
             "ts": now,
             "wall_ts": time.time(),
             "rule_id": rule["id"],
             "rule_name": rule.get("name"),
             "type": action["type"],
-            "detail": self._action_detail(action),
+            "detail": detail if detail is not None else self._action_detail(action),
             "dry_run": dry_run,
             "cause": cause,
             "dispatched": False,
             "dispatch_error": None,
         }
+        if extra:
+            evt.update(extra)
         if not dry_run:
             try:
                 evt["dispatched"] = self._dispatch(action) or False
@@ -282,15 +419,29 @@ class RuleEngine:
         self._action_log.append(evt)
         return evt
 
+    def _fire_macro(self, rule: dict[str, Any], transition: dict[str, Any],
+                    macro: dict[str, Any], dry_run: bool, now: float, cause: str) -> dict[str, Any]:
+        token = str(macro.get("token") or "")
+        action = {"type": "http_request", "method": "", "url": "", "body": token}
+        cam = macro.get("camera")
+        cam_str = f" (cam{cam})" if cam not in (None, "") else ""
+        detail = f"macro → {macro.get('name') or token}{cam_str} · {transition.get('name', '')}"
+        return self._fire(rule, action, dry_run, now, cause, detail=detail, extra={
+            "macro_id": macro.get("id"),
+            "macro_name": macro.get("name"),
+            "camera": cam,
+            "transition_id": transition.get("id"),
+            "transition_name": transition.get("name"),
+            "token": token,
+        })
+
     def _dispatch(self, action: dict[str, Any]) -> bool:
-        """Send the http_request action. Returns True if the request was
-        dispatched (fired on a daemon thread; success means "sent")."""
+        """Send the http_request action. Returns True if dispatched (fired on a
+        daemon thread; success means 'sent')."""
         if action["type"] != "http_request":
             return False
         url = (action.get("url") or "").strip()
         method = (action.get("method") or "").upper().strip()
-        # Fall back to the global ASS HTTP defaults when the per-action
-        # fields are empty — the simplified UI uses this exclusively.
         if not url or not method:
             ass = (self.config_store.snapshot()
                    .get("connections", {})
@@ -302,8 +453,6 @@ class RuleEngine:
         if not url:
             return False
         body = (action.get("body") or "").encode("utf-8") if method == "POST" else None
-        # Fire on a daemon thread — never block the engine tick on a
-        # network call. We don't await the response; success means "sent".
         threading.Thread(
             target=self._do_http,
             args=(method, url, body),
@@ -312,12 +461,18 @@ class RuleEngine:
         ).start()
         return True
 
-    def _next_action_preview(self, rule: dict[str, Any]) -> str:
+    def _next_action_preview(self, cfg: dict[str, Any], rule: dict[str, Any]) -> str:
         """Short description of what this rule's first action would emit."""
         actions = rule.get("actions") or []
         if not actions:
             return "(no actions)"
         a = actions[0]
+        if a.get("type") == "transition":
+            t = self._resolve_transition(cfg, rule)
+            if t is None:
+                return "transition: (없음)"
+            n = len([m for m in (t.get("deck") or [])])
+            return f"transition: {t.get('name', '?')} · {n}장"
         body = a.get("body") or ""
         if len(body) > 40:
             body = body[:38] + "…"
@@ -325,9 +480,13 @@ class RuleEngine:
 
     @staticmethod
     def _action_detail(action: dict[str, Any]) -> str:
+        if action.get("type") == "transition":
+            return f"transition → {action.get('transition_id', '')}"
         url = action.get("url") or "(global)"
         method = action.get("method") or "POST"
-        return f"HTTP {method} → {url}"
+        body = action.get("body") or ""
+        suffix = f" · {body}" if body else ""
+        return f"HTTP {method} → {url}{suffix}"
 
     @staticmethod
     def _do_http(method: str, url: str, body: bytes | None) -> None:

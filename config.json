@@ -15,7 +15,7 @@
   },
   "runtime": {
     "auto": true,
-    "dry_run": true,
+    "dry_run": false,
     "refire_s": 3.0
   },
   "current_project": "default"

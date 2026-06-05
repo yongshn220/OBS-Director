@@ -21,6 +21,8 @@
     <button class="tab active" data-tab="monitor">Monitor</button>
     <button class="tab" data-tab="channels">Channels</button>
     <button class="tab" data-tab="groups">Groups</button>
+    <button class="tab" data-tab="macros">Macros</button>
+    <button class="tab" data-tab="transitions">Transitions</button>
     <button class="tab" data-tab="rules">Rules</button>
     <button class="tab" data-tab="connections">Connections</button>
   </nav>
@@ -73,14 +75,42 @@
     <div class="channels-table" id="channels-table"></div>
   </section>
 
+  <!-- ─ Macros ─────────────────────────────────────────────────── -->
+  <section class="panel hidden" id="panel-macros">
+    <div class="panel-header">
+      <h2>매크로 — ASS 매크로 = 샷 1개</h2>
+      <p class="hint">
+        각 매크로는 ASS 안에서 <strong>PTZ 프리셋 이동 + 장면 전환</strong>을 한 번에 처리하는 "샷"입니다.
+        <strong>토큰</strong> = 이 매크로를 발동시키려고 ASS HTTP 서버로 보내는 payload(body),
+        <strong>카메라</strong> = 로테이션이 같은 카메라를 연속으로 안 쓰게 하는 데 씁니다.
+      </p>
+    </div>
+    <div class="macros-table" id="macros-table"></div>
+    <button class="btn primary" id="add-macro-btn" style="margin-top:12px">+ 매크로 추가</button>
+  </section>
+
+  <!-- ─ Transitions ────────────────────────────────────────────── -->
+  <section class="panel hidden" id="panel-transitions">
+    <div class="panel-header">
+      <h2>트랜지션 — 회전 정책 (매크로 덱)</h2>
+      <p class="hint">
+        덱에 매크로를 넣으면 <strong>로테이션 간격</strong>마다 한 장씩 뽑아 발동합니다.
+        카드덱처럼 전부 소진하면 다시 셔플해서 반복하고, <strong>카메라 교대</strong>를 켜면
+        같은 카메라가 연속으로 나오지 않습니다. 룰의 액션에서 이 트랜지션을 골라 연결하세요.
+      </p>
+    </div>
+    <div class="transitions-list" id="transitions-list"></div>
+    <button class="btn primary" id="add-transition-btn" style="margin-top:12px">+ 트랜지션 추가</button>
+  </section>
+
   <!-- ─ Rules ──────────────────────────────────────────────────── -->
   <section class="panel hidden" id="panel-rules">
     <div class="panel-header rules-header">
       <div>
         <h2>룰 (위 → 아래 = 우선순위 높음 → 낮음)</h2>
         <p class="hint">
-          그룹의 활성/비활성 조합에 따라 OBS 씬·PTZ 프리셋을 자동 전환합니다.
-          상단 헤더에서 <strong>AUTO</strong>·<strong>DRY</strong>로 엔진을 제어하세요.
+          그룹의 활성/비활성 조합이 맞으면 그 룰의 <strong>트랜지션</strong>이 켜지고,
+          트랜지션이 매크로를 로테이션합니다. 상단 헤더에서 <strong>AUTO</strong>·<strong>DRY</strong>로 엔진을 제어하세요.
         </p>
       </div>
       <button class="btn primary" id="add-rule-btn">+ 룰 추가</button>
