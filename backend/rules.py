@@ -169,7 +169,12 @@ class RuleEngine:
         if switch_to is not None:
             if self.active_rule_id is not None and self.active_rule_id != switch_to["id"]:
                 self._refire_at.pop(self.active_rule_id, None)
-            self._rotation = None  # force rotation re-init for the new rule
+            # Don't wipe rotation state here. _tick_rotation re-inits only when
+            # the (rule, transition) actually differs (need_init). Keeping the
+            # prior state lets the SAME rule, after a brief condition flap,
+            # resume its deck + on-air camera memory instead of restarting with
+            # an immediate off-cadence draw that ignores the last camera (which
+            # produced visible same-camera repeats, e.g. cam3 → cam3).
             self.active_rule_id = switch_to["id"]
             self.active_since = now
             for action in switch_to.get("actions", []):
@@ -229,7 +234,12 @@ class RuleEngine:
                 round(active_rule_cooldown_remaining, 2)
                 if active_rule_cooldown_remaining is not None else None
             ),
-            "active_macro": (self._rotation or {}).get("current_macro_id"),
+            "active_macro": (
+                (self._rotation or {}).get("current_macro_id")
+                if self.active_rule_id is not None
+                and (self._rotation or {}).get("rule_id") == self.active_rule_id
+                else None
+            ),
             "fired": fired,
             "dry_run": dry_run,
             "matching": queue,
@@ -268,10 +278,14 @@ class RuleEngine:
     # ── Internal: state ───────────────────────────────────────────
 
     def _release_active(self) -> None:
+        # Note: rotation state is intentionally NOT cleared here. If the same
+        # rule re-activates after a brief condition flap, it resumes its deck
+        # and on-air camera memory (see _tick_rotation.need_init). A genuinely
+        # different rule/transition re-inits on its own; a non-transition rule
+        # clears rotation in the tick() drive block.
         if self.active_rule_id is not None:
             self._refire_at.pop(self.active_rule_id, None)
         self.active_rule_id = None
-        self._rotation = None
 
     def _match(self, rule: dict[str, Any], group_states: dict[str, dict[str, Any]]) -> bool:
         conditions = rule.get("conditions") or []
@@ -320,11 +334,16 @@ class RuleEngine:
                    macro_index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
         """Draw the next macro from the deck without replacement (card-deck).
 
-        Camera-aware: prefer a macro whose camera differs from the currently
-        on-air one so the incoming camera is off-air while it repositions.
-        Falls back to same-camera only when the remaining deck offers nothing
-        else (best-effort). Reshuffles by refilling when the deck is exhausted,
-        carrying the no-immediate-repeat rule across the reset boundary.
+        Camera-aware: never put two consecutive shots on the same PTZ camera
+        when that is combinatorially possible, so the incoming camera is
+        off-air while it repositions. To achieve that even with a camera-skewed
+        deck, we draw from the camera group with the MOST remaining cards among
+        those that differ from the on-air camera. Picking the largest group
+        first prevents the deck from stranding a run of same-camera cards at
+        the tail (which plain random-greedy does — e.g. a 6/4/1 deck strands
+        cam3 and forces cam3→cam3 ~14% of the time). The specific macro within
+        the chosen camera is still random. Reshuffles by refilling when the
+        deck is exhausted, carrying the no-repeat rule across that boundary.
         """
         deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
         if not deck:
@@ -337,8 +356,16 @@ class RuleEngine:
 
         prev_cam = rot.get("current_camera")
         if transition.get("camera_alternate", True):
-            diff = [mid for mid in remaining if macro_index[mid].get("camera") != prev_cam]
-            pool = diff or remaining
+            # Bucket the remaining cards by camera.
+            by_cam: dict[Any, list[str]] = {}
+            for mid in remaining:
+                by_cam.setdefault(macro_index[mid].get("camera"), []).append(mid)
+            cams = [c for c in by_cam if c != prev_cam]
+            if not cams:
+                cams = list(by_cam.keys())  # only the on-air camera remains
+            # Largest group first → no-adjacent-same-camera whenever feasible.
+            best_cam = max(cams, key=lambda c: len(by_cam[c]))
+            pool = by_cam[best_cam]
         else:
             pool = remaining
 
