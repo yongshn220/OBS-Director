@@ -43,6 +43,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="X32 Auto-Director", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_store_cache(request, call_next):
+    """This is a live control surface served over localhost; the UI assets
+    change often during setup. Tell the browser never to cache so a code
+    update never leaves a stale app.js with unbound buttons."""
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 # ── WebSocket broadcast ──────────────────────────────────────────────
 
 async def _broadcast_loop():
