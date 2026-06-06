@@ -228,6 +228,35 @@ class RuleEngine:
                 "preview": self._next_action_preview(cfg, r),
             })
 
+        # ── Live "Director" info for the active transition rotation ──
+        director: dict[str, Any] = {
+            "transition_id": None, "transition_name": None,
+            "current": None, "upcoming": [],
+            "next_in": None, "interval": None,
+        }
+        rot = self._rotation
+        if (self.active_rule_id is not None and rot
+                and rot.get("rule_id") == self.active_rule_id):
+            macro_index = self._macro_index(cfg)
+            active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
+            transition = self._resolve_transition(cfg, active_rule) if active_rule else None
+            if transition is not None:
+                cur_id = rot.get("current_macro_id")
+                cur = macro_index.get(cur_id) if cur_id else None
+                director["transition_id"] = transition.get("id")
+                director["transition_name"] = transition.get("name")
+                if cur is not None:
+                    director["current"] = {
+                        "macro_id": cur_id, "name": cur.get("name"),
+                        "camera": cur.get("camera"),
+                    }
+                director["upcoming"] = self._predict(rot, transition, macro_index, 5)
+                director["interval"] = round(
+                    float(transition.get("interval_s", self.DEFAULT_INTERVAL_S)), 2)
+                nxt = rot.get("next_at")
+                if nxt is not None and nxt != float("inf"):
+                    director["next_in"] = round(max(0.0, nxt - now), 2)
+
         return {
             "active_rule_id": self.active_rule_id,
             "active_rule_name": active_name,
@@ -235,12 +264,8 @@ class RuleEngine:
                 round(active_rule_cooldown_remaining, 2)
                 if active_rule_cooldown_remaining is not None else None
             ),
-            "active_macro": (
-                (self._rotation or {}).get("current_macro_id")
-                if self.active_rule_id is not None
-                and (self._rotation or {}).get("rule_id") == self.active_rule_id
-                else None
-            ),
+            "active_macro": (director["current"] or {}).get("macro_id"),
+            "director": director,
             "fired": fired,
             "dry_run": dry_run,
             "matching": queue,
@@ -343,8 +368,88 @@ class RuleEngine:
                 cams.append(c)
         return cams
 
+    def _draw_opening(self, rot: dict[str, Any], transition: dict[str, Any],
+                      macro_index: dict[str, dict[str, Any]],
+                      rng: random.Random | Any = random) -> dict[str, Any] | None:
+        """Open a transition on its DESIGNATED first screen — the first macro
+        in the deck — so a rule change cuts to a recognizable establishing shot
+        rather than a random one. Then prime the bags so rotation continues
+        cleanly (the opening camera won't immediately repeat)."""
+        deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
+        if not deck:
+            return None
+        first = deck[0]
+        macro = macro_index[first]
+        cam = macro.get("camera")
+        if not transition.get("camera_alternate", True):
+            rest = [m for m in deck if m != first]
+            rng.shuffle(rest)
+            rot["flat_bag"] = rest
+            rot["scene_bags"] = {}
+            rot["cam_bag"] = []
+        else:
+            cam_scenes = [m for m in deck if macro_index[m].get("camera") == cam and m != first]
+            rng.shuffle(cam_scenes)
+            rot["scene_bags"] = {cam: cam_scenes}
+            rot["cam_bag"] = []
+            rot["flat_bag"] = []
+        rot["current_macro_id"] = first
+        rot["current_camera"] = cam
+        # Commit the first post-opening round so the Director preview is exact.
+        self._commit_next_round(rot, transition, macro_index, rng)
+        return macro
+
+    PREVIEW_HORIZON = 5
+
+    def _commit_next_round(self, rot: dict[str, Any], transition: dict[str, Any],
+                           macro_index: dict[str, dict[str, Any]],
+                           rng: random.Random | Any) -> None:
+        """Eager-commit several rounds ahead — the camera round-robin order plus
+        the committed scene order for every camera occurrence — so the upcoming
+        sequence is exactly predictable for the whole Director horizon (what
+        _predict shows is what will fire), not just the immediate next shot."""
+        if not transition.get("camera_alternate", True):
+            return
+        deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
+        cams = self._camera_order(deck, macro_index)
+        if not cams:
+            return
+
+        # Camera buffer: top up to a couple rounds so the full preview horizon
+        # is committed. Each appended round avoids repeating the prior camera.
+        cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
+        buffer_len = max(2 * len(cams), self.PREVIEW_HORIZON + 1)
+        last = cam_bag[-1] if cam_bag else rot.get("current_camera")
+        while len(cam_bag) < buffer_len:
+            nb = list(cams)
+            rng.shuffle(nb)
+            if len(nb) > 1 and nb[0] == last:
+                nb.append(nb.pop(0))
+            cam_bag.extend(nb)
+            last = nb[-1]
+
+        # Scene buffers: each camera needs as many committed scenes as it occurs
+        # in the camera buffer; extend by reshuffled full cycles (card-deck).
+        from collections import Counter
+        need = Counter(cam_bag)
+        scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
+        for c, k in need.items():
+            cb = [mid for mid in (scene_bags.get(c) or [])
+                  if mid in macro_index and macro_index[mid].get("camera") == c]
+            cam_scenes = [mid for mid in deck if macro_index[mid].get("camera") == c]
+            if not cam_scenes:
+                cb = []
+            while len(cb) < k:
+                extra = list(cam_scenes)
+                rng.shuffle(extra)
+                cb.extend(extra)
+            scene_bags[c] = cb
+        rot["cam_bag"] = cam_bag
+        rot["scene_bags"] = scene_bags
+
     def _draw_next(self, rot: dict[str, Any], transition: dict[str, Any],
-                   macro_index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+                   macro_index: dict[str, dict[str, Any]],
+                   rng: random.Random | Any = random) -> dict[str, Any] | None:
         """Pick the next macro using a TWO-LEVEL model:
 
           - Camera level (round-robin): each round visits every distinct camera
@@ -357,20 +462,21 @@ class RuleEngine:
             are dealt from that camera's own card-deck — each of its scenes once
             before that camera reshuffles.
 
-        With camera_alternate off, falls back to a flat card-deck over all
-        macros (camera may repeat).
+        Draw order is COMMITTED (bags shuffled once on refill, then consumed
+        front-to-back), so the upcoming sequence is predictable for the live
+        Director view. With camera_alternate off, falls back to a flat
+        card-deck over all macros (camera may repeat).
         """
         deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
         if not deck:
             return None
 
         if not transition.get("camera_alternate", True):
-            # Flat card-deck: deal every macro once, then reshuffle.
             bag = [mid for mid in (rot.get("flat_bag") or []) if mid in macro_index]
             if not bag:
                 bag = list(deck)
-            choice = random.choice(bag)
-            bag.remove(choice)
+                rng.shuffle(bag)
+            choice = bag.pop(0)
             rot["flat_bag"] = bag
             macro = macro_index[choice]
             rot["current_macro_id"] = choice
@@ -378,36 +484,85 @@ class RuleEngine:
             return macro
 
         cams = self._camera_order(deck, macro_index)
+        scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
 
-        # ── Camera round-robin bag ──
+        # Pop the next camera (round-robin, committed order).
         cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
         if not cam_bag:
             cam_bag = list(cams)
-            random.shuffle(cam_bag)
-            # Don't start a new round on the camera that's currently on-air.
+            rng.shuffle(cam_bag)
             if len(cam_bag) > 1 and cam_bag[0] == rot.get("current_camera"):
                 cam_bag.append(cam_bag.pop(0))
         cam = cam_bag.pop(0)
-        rot["cam_bag"] = cam_bag
 
-        # ── Per-camera scene shuffle bag ──
-        cam_scenes = [mid for mid in deck if macro_index[mid].get("camera") == cam]
-        scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
+        # Pop the next scene within that camera (committed per-camera deck).
         bag = [mid for mid in (scene_bags.get(cam) or [])
                if mid in macro_index and macro_index[mid].get("camera") == cam]
         if not bag:
-            bag = list(cam_scenes)
+            bag = [mid for mid in deck if macro_index[mid].get("camera") == cam]
+            rng.shuffle(bag)
         if not bag:
             return None  # camera has no scenes (shouldn't happen)
-        choice = random.choice(bag)
-        bag.remove(choice)
+        choice = bag.pop(0)
         scene_bags[cam] = bag
-        rot["scene_bags"] = scene_bags
 
+        rot["cam_bag"] = cam_bag
+        rot["scene_bags"] = scene_bags
         macro = macro_index[choice]
         rot["current_macro_id"] = choice
         rot["current_camera"] = cam
+        # Commit the next round so the upcoming sequence stays exactly known.
+        self._commit_next_round(rot, transition, macro_index, rng)
         return macro
+
+    def _predict(self, rot: dict[str, Any], transition: dict[str, Any],
+                 macro_index: dict[str, dict[str, Any]], n: int) -> list[dict[str, Any]]:
+        """Look ahead n shots WITHOUT mutating live state. Seeded from the
+        committed bag state so the result is stable across ticks (it only
+        shifts when a real shot fires). The immediate next shots are exact
+        (committed); shots beyond a bag refill are a representative sample."""
+        if not rot:
+            return []
+        seed = hash((
+            rot.get("current_macro_id"),
+            tuple(rot.get("cam_bag") or []),
+            tuple(sorted((str(k), tuple(v)) for k, v in (rot.get("scene_bags") or {}).items())),
+            tuple(rot.get("flat_bag") or []),
+        ))
+        rng = random.Random(seed)
+        sim = {
+            "cam_bag": list(rot.get("cam_bag") or []),
+            "scene_bags": {k: list(v) for k, v in (rot.get("scene_bags") or {}).items()},
+            "flat_bag": list(rot.get("flat_bag") or []),
+            "current_macro_id": rot.get("current_macro_id"),
+            "current_camera": rot.get("current_camera"),
+        }
+        out: list[dict[str, Any]] = []
+        for _ in range(n):
+            m = self._draw_next(sim, transition, macro_index, rng=rng)
+            if m is None:
+                break
+            out.append({"macro_id": m["id"], "name": m.get("name"), "camera": m.get("camera")})
+        return out
+
+    def preview_transition(self, transition: dict[str, Any],
+                           macro_index: dict[str, dict[str, Any]], n: int) -> list[dict[str, Any]]:
+        """A representative upcoming sequence for an idle transition (opening
+        shot first, then rotation). Seeded by transition id so reopening the
+        preview is stable."""
+        rng = random.Random(hash(("preview", transition.get("id"))))
+        rot: dict[str, Any] = {
+            "cam_bag": [], "scene_bags": {}, "flat_bag": [],
+            "current_macro_id": None, "current_camera": None,
+        }
+        out: list[dict[str, Any]] = []
+        m = self._draw_opening(rot, transition, macro_index, rng=rng)
+        while m is not None and len(out) < n:
+            out.append({"macro_id": m["id"], "name": m.get("name"),
+                        "camera": m.get("camera"),
+                        "opening": len(out) == 0})
+            m = self._draw_next(rot, transition, macro_index, rng=rng)
+        return out
 
     def _tick_rotation(self, rule: dict[str, Any], transition: dict[str, Any],
                        cfg: dict[str, Any], now: float, dry_run: bool,
@@ -439,7 +594,8 @@ class RuleEngine:
                 "current_camera": None,
                 "next_at": now,
             }
-            macro = self._draw_next(rot, transition, macro_index)
+            # Open on the transition's designated first screen (deck[0]).
+            macro = self._draw_opening(rot, transition, macro_index)
             if macro is not None:
                 fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
             schedule_next()

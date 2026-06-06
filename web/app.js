@@ -690,6 +690,7 @@ function connectWS() {
       const msg = JSON.parse(e.data);
       if (msg.type === 'tick') {
         renderMonitorTick(msg);
+        renderDirector(msg.engine || {});
         renderEngineState(msg.engine || {});
         renderActivityLog(msg.recent_log || []);
         renderCueSheet(msg);
@@ -807,6 +808,81 @@ function escapeHtml(s) {
 }
 
 // ── Rules ─────────────────────────────────────────────────────────
+// ── Camera colors (shared by Director HUD + Transitions preview) ──
+const CAM_PALETTE = ['#ffb02e', '#4488ff', '#00d68f', '#ff5da2', '#b06bff', '#33c5ff', '#ff8a5b'];
+function cameraColor(cam) {
+  if (cam === null || cam === undefined || cam === '') return '#7a8290';
+  const n = parseInt(cam, 10);
+  if (!isNaN(n)) return CAM_PALETTE[((n - 1) % CAM_PALETTE.length + CAM_PALETTE.length) % CAM_PALETTE.length];
+  let h = 0;
+  for (const ch of String(cam)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return CAM_PALETTE[h % CAM_PALETTE.length];
+}
+function camLabel(cam) {
+  return (cam === null || cam === undefined || cam === '') ? '—' : `CAM ${cam}`;
+}
+
+// ── Live Director HUD (Monitor tab) ──────────────────────────────
+function renderDirector(engine) {
+  const root = document.getElementById('director');
+  if (!root) return;
+  const d = engine.director;
+  if (!d || !d.transition_id || !d.current) {
+    root.classList.add('hidden');
+    root.innerHTML = '';
+    return;
+  }
+  root.classList.remove('hidden');
+
+  const interval = d.interval || 0;
+  const nextIn = (d.next_in === null || d.next_in === undefined) ? null : d.next_in;
+  const pct = (interval > 0 && nextIn !== null)
+    ? Math.max(0, Math.min(100, (1 - nextIn / interval) * 100))
+    : 0;
+
+  // Build a stable signature so we only rebuild DOM when the shot list changes;
+  // the countdown bar updates every tick without thrashing the filmstrip.
+  const upcoming = d.upcoming || [];
+  const sig = [d.current.macro_id, ...upcoming.map(u => u.macro_id)].join('>');
+  if (root.dataset.sig !== sig) {
+    root.dataset.sig = sig;
+    root.innerHTML = `
+      <div class="director-head">
+        <div class="dh-left">
+          <span class="dh-label">DIRECTOR</span>
+          <span class="dh-rule">● ${escapeHtml(engine.active_rule_name || '—')}</span>
+          <span class="dh-arrow">→</span>
+          <span class="dh-trans">🔄 ${escapeHtml(d.transition_name || '—')}</span>
+        </div>
+        <div class="dh-right">
+          <span class="dh-next-label">다음 컷</span>
+          <span class="dh-countbar"><span class="dh-countfill"></span></span>
+          <span class="dh-countnum"></span>
+        </div>
+      </div>
+      <div class="director-strip">
+        ${shotChip(d.current, 'now', 'ON AIR')}
+        <span class="ds-flow">▶</span>
+        ${upcoming.map((u, i) => shotChip(u, i === 0 ? 'next' : 'soon', i === 0 ? '다음' : '')).join('')}
+      </div>`;
+  }
+  // Live countdown (every tick)
+  const fill = root.querySelector('.dh-countfill');
+  const num = root.querySelector('.dh-countnum');
+  if (fill) fill.style.width = pct + '%';
+  if (num) num.textContent = (nextIn !== null) ? `${nextIn.toFixed(1)}s` : (interval ? '' : '정지');
+}
+
+function shotChip(shot, kind, badge) {
+  const color = cameraColor(shot.camera);
+  return `
+    <span class="shot-chip sc-${kind}" style="--cam:${color}">
+      ${badge ? `<span class="sc-badge">${escapeHtml(badge)}</span>` : ''}
+      <span class="sc-cam">${escapeHtml(camLabel(shot.camera))}</span>
+      <span class="sc-name">${escapeHtml(shot.name || shot.macro_id || '')}</span>
+    </span>`;
+}
+
 function bindAddRule() {
   document.getElementById('add-rule-btn').addEventListener('click', async () => {
     const res = await fetch('/api/rules', {
@@ -1312,17 +1388,26 @@ function renderTransitionCard(t) {
   });
   head.append(name, del);
 
-  // Deck: macro chips + add dropdown
+  // Deck: macro chips + add dropdown. deck[0] = the "opening" shot played
+  // first whenever this transition activates (rule change).
   const deckLabel = document.createElement('div');
   deckLabel.className = 'deck-label';
-  deckLabel.textContent = `덱 (${(t.deck || []).length}장) — 간격마다 한 장씩, 소진 후 재셔플`;
+  deckLabel.innerHTML = `덱 (${(t.deck || []).length}장) — 룰 전환 시 <b>첫 장(★)</b>으로 진입 후 카메라 교대 회전`;
 
   const deckWrap = document.createElement('div');
   deckWrap.className = 'deck-wrap';
   (t.deck || []).forEach((mid, i) => {
     const m = macroById[mid];
     const chip = document.createElement('span');
-    chip.className = 'deck-chip' + (m ? '' : ' missing');
+    chip.className = 'deck-chip' + (m ? '' : ' missing') + (i === 0 ? ' opening' : '');
+    if (m) chip.style.setProperty('--cam', cameraColor(m.camera));
+    if (i === 0) {
+      const star = document.createElement('span');
+      star.className = 'dc-open';
+      star.title = '첫 화면 (룰 전환 시 여기로 진입)';
+      star.textContent = '★';
+      chip.appendChild(star);
+    }
     const label = document.createElement('span');
     label.className = 'dc-name';
     label.textContent = m ? (m.name || m.token || mid) : '(삭제됨)';
@@ -1332,6 +1417,19 @@ function renderTransitionCard(t) {
       camTag.className = 'dc-cam';
       camTag.textContent = 'cam' + m.camera;
       chip.appendChild(camTag);
+    }
+    if (i > 0) {
+      const up = document.createElement('button');
+      up.className = 'dc-first';
+      up.textContent = '★';
+      up.title = '이 장을 첫 화면으로';
+      up.addEventListener('click', () => {
+        const next = (t.deck || []).slice();
+        const [picked] = next.splice(i, 1);
+        next.unshift(picked);
+        updateTransition(t.id, { deck: next });
+      });
+      chip.appendChild(up);
     }
     const x = document.createElement('button');
     x.className = 'dc-x';
@@ -1395,8 +1493,40 @@ function renderTransitionCard(t) {
     ? '간격 0 = 회전 없음 (덱 첫 장을 정적으로 유지)'
     : '';
 
-  card.append(head, deckLabel, deckWrap, params, hint);
+  // Preview strip: a representative upcoming sequence (opening first).
+  const previewWrap = document.createElement('div');
+  previewWrap.className = 'transition-preview';
+  const pvLabel = document.createElement('div');
+  pvLabel.className = 'pv-label';
+  pvLabel.textContent = '예상 순서';
+  const pvStrip = document.createElement('div');
+  pvStrip.className = 'pv-strip';
+  pvStrip.textContent = '…';
+  previewWrap.append(pvLabel, pvStrip);
+  loadTransitionPreview(t.id, pvStrip);
+
+  card.append(head, deckLabel, deckWrap, params, hint, previewWrap);
   return card;
+}
+
+async function loadTransitionPreview(transitionId, stripEl) {
+  try {
+    const res = await fetch(`/api/transitions/${encodeURIComponent(transitionId)}/preview?n=12`);
+    if (!res.ok) { stripEl.textContent = '(미리보기 불가)'; return; }
+    const data = await res.json();
+    const seq = data.sequence || [];
+    if (!seq.length) { stripEl.textContent = '(덱이 비어 있음)'; return; }
+    stripEl.innerHTML = seq.map((s, i) => {
+      const color = cameraColor(s.camera);
+      const open = s.opening ? '<span class="pv-open">★</span>' : '';
+      return `<span class="pv-chip" style="--cam:${color}">${open}`
+           + `<span class="pv-cam">${escapeHtml(camLabel(s.camera))}</span>`
+           + `<span class="pv-name">${escapeHtml(s.name || s.macro_id || '')}</span></span>`
+           + (i < seq.length - 1 ? '<span class="pv-arrow">›</span>' : '');
+    }).join('');
+  } catch {
+    stripEl.textContent = '(미리보기 불가)';
+  }
 }
 
 function paramNum(label, value, min, max, step, unit, onChange) {

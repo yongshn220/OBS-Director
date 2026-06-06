@@ -362,6 +362,19 @@ def delete_transition(transition_id: str):
     return config_store.update(mutate)
 
 
+@app.get("/api/transitions/{transition_id}/preview")
+def preview_transition(transition_id: str, n: int = 12):
+    """A representative upcoming shot sequence for the transition (opening shot
+    first, then rotation) — used by the Transitions tab preview strip."""
+    cfg = config_store.get()
+    t = next((t for t in cfg.get("transitions", []) if t["id"] == transition_id), None)
+    if t is None:
+        raise HTTPException(404, f"transition {transition_id} not found")
+    macro_index = {m["id"]: m for m in cfg.get("macros", []) if m.get("id")}
+    seq = rule_engine.preview_transition(t, macro_index, max(1, min(int(n), 50)))
+    return {"transition_id": transition_id, "sequence": seq}
+
+
 # ── REST: rules ──────────────────────────────────────────────────────
 
 @app.get("/api/rules")
