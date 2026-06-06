@@ -91,12 +91,14 @@ class RuleEngine:
     Output semantics (per active rule's actions):
       - http_request : fired once on switch, then re-fired every `refire_s`
         as a self-healing heartbeat.
-      - transition   : drives a macro rotation. Each rotation tick draws the
+      - transition   : drives a macro rotation. A macro's token is POSTed ONLY
+        when the on-air macro changes — once per draw (on rule activation and
+        each rotation interval), never re-sent in between. Each draw takes the
         next macro from the deck (camera-aware: avoid two consecutive shots on
         the same PTZ camera so the incoming camera is always off-air while it
-        repositions) and POSTs that macro's token. The deck is a card-deck —
-        every macro is dealt once before the deck reshuffles. The current
-        macro's token is also re-fired every `refire_s` for reliability.
+        repositions). The deck is a card-deck — every macro is dealt once
+        before it reshuffles. interval_s=0 ⇒ a static shot fired exactly once.
+        (http_request actions still use the refire_s heartbeat; transitions do not.)
     """
 
     LOG_MAX = 100
@@ -197,7 +199,7 @@ class RuleEngine:
                 # transition rotation
                 transition = self._resolve_transition(cfg, active_rule)
                 if transition is not None:
-                    self._tick_rotation(active_rule, transition, cfg, now, dry_run, refire_s, fired)
+                    self._tick_rotation(active_rule, transition, cfg, now, dry_run, fired)
                 else:
                     self._rotation = None
 
@@ -350,7 +352,11 @@ class RuleEngine:
 
     def _tick_rotation(self, rule: dict[str, Any], transition: dict[str, Any],
                        cfg: dict[str, Any], now: float, dry_run: bool,
-                       refire_s: float, fired: list[dict[str, Any]]) -> None:
+                       fired: list[dict[str, Any]]) -> None:
+        """Fire a macro ONLY when the on-air macro changes — i.e. once per draw
+        (rule activation / re-init, and each rotation interval). The current
+        macro's token is NOT periodically re-sent; a static transition
+        (interval_s=0) therefore fires exactly once and then holds."""
         macro_index = self._macro_index(cfg)
         rot = self._rotation
         need_init = (
@@ -359,10 +365,9 @@ class RuleEngine:
             or rot.get("transition_id") != transition.get("id")
         )
 
-        def schedule_after_fire() -> None:
+        def schedule_next() -> None:
             interval = self._interval(transition)
             rot["next_at"] = (now + interval) if interval > 0 else float("inf")
-            rot["refire_at"] = (now + refire_s) if refire_s > 0 else float("inf")
 
         if need_init:
             self._rotation = rot = {
@@ -372,25 +377,18 @@ class RuleEngine:
                 "current_macro_id": None,
                 "current_camera": None,
                 "next_at": now,
-                "refire_at": now,
             }
             macro = self._draw_next(rot, transition, macro_index)
             if macro is not None:
                 fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
-            schedule_after_fire()
+            schedule_next()
             return
 
         if now >= rot["next_at"]:
             macro = self._draw_next(rot, transition, macro_index)
             if macro is not None:
                 fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
-            schedule_after_fire()
-        elif refire_s > 0 and now >= rot["refire_at"]:
-            mid = rot.get("current_macro_id")
-            macro = macro_index.get(mid) if mid else None
-            if macro is not None:
-                fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "refire"))
-            rot["refire_at"] = now + refire_s
+            schedule_next()
 
     # ── Internal: firing / dispatch ───────────────────────────────
 
