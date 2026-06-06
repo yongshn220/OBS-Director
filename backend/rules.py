@@ -93,11 +93,12 @@ class RuleEngine:
         as a self-healing heartbeat.
       - transition   : drives a macro rotation. A macro's token is POSTed ONLY
         when the on-air macro changes — once per draw (on rule activation and
-        each rotation interval), never re-sent in between. Each draw takes the
-        next macro from the deck (camera-aware: avoid two consecutive shots on
-        the same PTZ camera so the incoming camera is always off-air while it
-        repositions). The deck is a card-deck — every macro is dealt once
-        before it reshuffles. interval_s=0 ⇒ a static shot fired exactly once.
+        each rotation interval), never re-sent in between. With camera_alternate
+        on, draws are two-level: cameras round-robin (each camera once per round,
+        shuffled order, never the on-air camera twice in a row) and the scenes
+        within a camera shuffle as that camera's own card-deck. This guarantees
+        no consecutive same-camera cut and gives every camera equal airtime.
+        interval_s=0 ⇒ a static shot fired exactly once.
         (http_request actions still use the refire_s heartbeat; transitions do not.)
     """
 
@@ -330,51 +331,82 @@ class RuleEngine:
             base = base + random.uniform(-jit, jit)
         return max(0.5, base)
 
+    @staticmethod
+    def _camera_order(deck: list[str], macro_index: dict[str, dict[str, Any]]) -> list[Any]:
+        """Distinct cameras present in the deck, in order of first appearance."""
+        seen: set[Any] = set()
+        cams: list[Any] = []
+        for mid in deck:
+            c = macro_index[mid].get("camera")
+            if c not in seen:
+                seen.add(c)
+                cams.append(c)
+        return cams
+
     def _draw_next(self, rot: dict[str, Any], transition: dict[str, Any],
                    macro_index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
-        """Draw the next macro from the deck without replacement (card-deck).
+        """Pick the next macro using a TWO-LEVEL model:
 
-        Camera-aware: never put two consecutive shots on the same PTZ camera
-        when that is combinatorially possible, so the incoming camera is
-        off-air while it repositions. To achieve that even with a camera-skewed
-        deck, we draw from the camera group with the MOST remaining cards among
-        those that differ from the on-air camera. Picking the largest group
-        first prevents the deck from stranding a run of same-camera cards at
-        the tail (which plain random-greedy does — e.g. a 6/4/1 deck strands
-        cam3 and forces cam3→cam3 ~14% of the time). The specific macro within
-        the chosen camera is still random. Reshuffles by refilling when the
-        deck is exhausted, carrying the no-repeat rule across that boundary.
+          - Camera level (round-robin): each round visits every distinct camera
+            in the deck exactly once, in a freshly shuffled order, with the
+            first camera of a new round chosen so it never equals the on-air
+            camera. This GUARANTEES no two consecutive shots share a camera
+            (whenever the deck has ≥2 cameras), and gives every camera equal
+            airtime regardless of how many scenes it has.
+          - Scene level (per-camera shuffle): within the chosen camera, scenes
+            are dealt from that camera's own card-deck — each of its scenes once
+            before that camera reshuffles.
+
+        With camera_alternate off, falls back to a flat card-deck over all
+        macros (camera may repeat).
         """
         deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
         if not deck:
             return None
-        remaining = rot.get("deck_remaining") or []
-        # Drop any entries that became invalid (macro deleted mid-cycle).
-        remaining = [mid for mid in remaining if mid in macro_index]
-        if not remaining:
-            remaining = list(deck)  # reshuffle = refill the deck
 
-        prev_cam = rot.get("current_camera")
-        if transition.get("camera_alternate", True):
-            # Bucket the remaining cards by camera.
-            by_cam: dict[Any, list[str]] = {}
-            for mid in remaining:
-                by_cam.setdefault(macro_index[mid].get("camera"), []).append(mid)
-            cams = [c for c in by_cam if c != prev_cam]
-            if not cams:
-                cams = list(by_cam.keys())  # only the on-air camera remains
-            # Largest group first → no-adjacent-same-camera whenever feasible.
-            best_cam = max(cams, key=lambda c: len(by_cam[c]))
-            pool = by_cam[best_cam]
-        else:
-            pool = remaining
+        if not transition.get("camera_alternate", True):
+            # Flat card-deck: deal every macro once, then reshuffle.
+            bag = [mid for mid in (rot.get("flat_bag") or []) if mid in macro_index]
+            if not bag:
+                bag = list(deck)
+            choice = random.choice(bag)
+            bag.remove(choice)
+            rot["flat_bag"] = bag
+            macro = macro_index[choice]
+            rot["current_macro_id"] = choice
+            rot["current_camera"] = macro.get("camera")
+            return macro
 
-        choice = random.choice(pool)
-        remaining.remove(choice)
-        rot["deck_remaining"] = remaining
+        cams = self._camera_order(deck, macro_index)
+
+        # ── Camera round-robin bag ──
+        cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
+        if not cam_bag:
+            cam_bag = list(cams)
+            random.shuffle(cam_bag)
+            # Don't start a new round on the camera that's currently on-air.
+            if len(cam_bag) > 1 and cam_bag[0] == rot.get("current_camera"):
+                cam_bag.append(cam_bag.pop(0))
+        cam = cam_bag.pop(0)
+        rot["cam_bag"] = cam_bag
+
+        # ── Per-camera scene shuffle bag ──
+        cam_scenes = [mid for mid in deck if macro_index[mid].get("camera") == cam]
+        scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
+        bag = [mid for mid in (scene_bags.get(cam) or [])
+               if mid in macro_index and macro_index[mid].get("camera") == cam]
+        if not bag:
+            bag = list(cam_scenes)
+        if not bag:
+            return None  # camera has no scenes (shouldn't happen)
+        choice = random.choice(bag)
+        bag.remove(choice)
+        scene_bags[cam] = bag
+        rot["scene_bags"] = scene_bags
+
         macro = macro_index[choice]
         rot["current_macro_id"] = choice
-        rot["current_camera"] = macro.get("camera")
+        rot["current_camera"] = cam
         return macro
 
     def _tick_rotation(self, rule: dict[str, Any], transition: dict[str, Any],
@@ -400,7 +432,9 @@ class RuleEngine:
             self._rotation = rot = {
                 "rule_id": rule["id"],
                 "transition_id": transition.get("id"),
-                "deck_remaining": [],
+                "cam_bag": [],       # camera round-robin queue
+                "scene_bags": {},    # camera -> remaining scene ids
+                "flat_bag": [],      # used only when camera_alternate is off
                 "current_macro_id": None,
                 "current_camera": None,
                 "next_at": now,
