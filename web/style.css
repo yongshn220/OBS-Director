@@ -502,7 +502,10 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 }
 .director-strip {
   display: flex; align-items: stretch; gap: 8px;
-  overflow-x: auto; padding-bottom: 2px;
+  overflow-x: auto;
+  /* Top room so the absolutely-positioned ON-AIR/다음 badges (top:-8px)
+     aren't clipped — overflow-x:auto also clips vertical overflow. */
+  padding: 12px 2px 4px;
 }
 .director-strip .ds-flow { align-self: center; color: var(--muted); font-size: 11px; }
 .shot-chip {
