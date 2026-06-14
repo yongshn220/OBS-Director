@@ -98,13 +98,25 @@ def _normalize_transition(t: dict[str, Any], valid_macro_ids: set[str]) -> dict[
     """Coerce a transition. The deck is filtered to existing macro ids so a
     deleted macro never lingers as a dangling reference."""
     deck = [str(mid) for mid in (t.get("deck") or []) if str(mid) in valid_macro_ids]
+    # camera_weights: how many times each camera appears per rotation round
+    # (string camera value -> int >= 1). Absent cameras default to 1.
+    weights: dict[str, int] = {}
+    raw_w = t.get("camera_weights")
+    if isinstance(raw_w, dict):
+        for k, v in raw_w.items():
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv >= 1:
+                weights[str(k)] = iv
     return {
         "id": str(t.get("id") or new_transition_id()),
         "name": str(t.get("name") or ""),
         "deck": deck,
         "interval_s": _to_float(t.get("interval_s"), 8.0),
-        "jitter_s": _to_float(t.get("jitter_s"), 0.0),
         "camera_alternate": bool(t.get("camera_alternate", True)),
+        "camera_weights": weights,
     }
 
 

@@ -446,6 +446,39 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 }
 .transition-hint { font-size: 11px; color: var(--muted); min-height: 0; }
 
+/* Per-camera weights */
+.cam-weights {
+  border-top: 1px solid var(--border-strong);
+  padding-top: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.cw-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.cw-label .cw-sub { font-weight: 400; color: var(--muted); font-size: 11px; }
+.cw-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.cw-cell {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 7px 9px; min-width: 92px;
+  border: 1px solid color-mix(in srgb, var(--cam) 40%, transparent);
+  border-left: 4px solid var(--cam);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cam) 8%, transparent);
+}
+.cw-cap { display: flex; align-items: baseline; gap: 6px; }
+.cw-cap .cw-name { font-size: 11px; font-weight: 800; color: var(--cam); letter-spacing: 0.4px; }
+.cw-cap .cw-scenes { font-size: 10px; color: var(--muted); }
+.cw-ctl { display: flex; align-items: center; gap: 6px; }
+.cw-ctl input[type="number"] {
+  width: 46px; padding: 4px 6px;
+  background: var(--bg); border: 1px solid var(--border-strong);
+  border-radius: 6px; color: var(--text); font-size: 13px;
+}
+.cw-ctl .cw-pct {
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  font-weight: 700; color: var(--text);
+}
+.cw-actions { display: flex; gap: 6px; }
+.cw-warn { font-size: 11px; color: var(--yellow); }
+
 /* Rule action: transition picker card */
 .transition-action-card { display: flex; gap: 8px; align-items: center; }
 .transition-action-sel {

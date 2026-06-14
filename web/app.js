@@ -1509,13 +1509,11 @@ function renderTransitionCard(t) {
     deckWrap.appendChild(warn);
   }
 
-  // Params: interval, jitter, camera alternate
+  // Params: interval + camera alternate
   const params = document.createElement('div');
   params.className = 'transition-params';
   params.appendChild(paramNum('로테이션 간격', t.interval_s ?? 8, 0, 120, 0.5, 's',
     v => updateTransition(t.id, { interval_s: v })));
-  params.appendChild(paramNum('지터 ±', t.jitter_s ?? 0, 0, 30, 0.5, 's',
-    v => updateTransition(t.id, { jitter_s: v })));
   const altLabel = document.createElement('label');
   altLabel.className = 'alt-toggle';
   const alt = document.createElement('input');
@@ -1531,6 +1529,13 @@ function renderTransitionCard(t) {
     ? '간격 0 = 회전 없음 (덱 첫 장을 정적으로 유지)'
     : '';
 
+  // Camera weights — how many times each camera appears per round. Only
+  // meaningful with 카메라 교대 on; lets a camera with more scenes get more
+  // airtime so its scenes aren't starved.
+  const weightsBox = (t.camera_alternate !== false)
+    ? renderCameraWeights(t, macroById)
+    : null;
+
   // Preview strip: a representative upcoming sequence (opening first).
   const previewWrap = document.createElement('div');
   previewWrap.className = 'transition-preview';
@@ -1543,8 +1548,97 @@ function renderTransitionCard(t) {
   previewWrap.append(pvLabel, pvStrip);
   loadTransitionPreview(t.id, pvStrip);
 
-  card.append(head, deckLabel, deckWrap, params, hint, previewWrap);
+  card.append(head, deckLabel, deckWrap, params, hint);
+  if (weightsBox) card.append(weightsBox);
+  card.append(previewWrap);
   return card;
+}
+
+// Per-camera weight controls: each distinct camera in the deck gets a weight
+// (times per round) plus its scene count and resulting airtime %.
+function renderCameraWeights(t, macroById) {
+  const counts = {};
+  (t.deck || []).forEach(id => {
+    const m = macroById[id];
+    if (!m) return;
+    const c = (m.camera === null || m.camera === undefined) ? '' : String(m.camera);
+    if (c !== '') counts[c] = (counts[c] || 0) + 1;
+  });
+  const cams = Object.keys(counts);
+  if (cams.length < 2) return null;  // weighting only matters with ≥2 cameras
+
+  const weights = t.camera_weights || {};
+  const wOf = c => Math.max(1, parseInt(weights[c] ?? 1, 10) || 1);
+  const sum = cams.reduce((a, c) => a + wOf(c), 0) || 1;
+
+  const box = document.createElement('div');
+  box.className = 'cam-weights';
+
+  const label = document.createElement('div');
+  label.className = 'cw-label';
+  label.innerHTML = '카메라 가중치 <span class="cw-sub">— 한 바퀴에 각 카메라가 몇 번 (컷 많은 카메라를 높게)</span>';
+  box.appendChild(label);
+
+  const row = document.createElement('div');
+  row.className = 'cw-row';
+
+  const setWeight = (c, w) => {
+    const next = { ...(t.camera_weights || {}) };
+    next[c] = Math.max(1, w | 0);
+    updateTransition(t.id, { camera_weights: next });
+  };
+
+  let maxShare = 0;
+  cams.forEach(c => {
+    const share = wOf(c) / sum;
+    maxShare = Math.max(maxShare, share);
+    const cell = document.createElement('div');
+    cell.className = 'cw-cell';
+    cell.style.setProperty('--cam', cameraColor(c));
+    const cap = document.createElement('div');
+    cap.className = 'cw-cap';
+    cap.innerHTML = `<span class="cw-name">CAM ${escapeHtml(c)}</span>`
+                  + `<span class="cw-scenes">${counts[c]}컷</span>`;
+    const ctl = document.createElement('div');
+    ctl.className = 'cw-ctl';
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.min = '1'; inp.max = '20'; inp.value = String(wOf(c));
+    inp.addEventListener('change', () => setWeight(c, parseInt(inp.value, 10)));
+    const pct = document.createElement('span');
+    pct.className = 'cw-pct';
+    pct.textContent = `${Math.round(share * 100)}%`;
+    ctl.append(inp, pct);
+    cell.append(cap, ctl);
+    row.appendChild(cell);
+  });
+  box.appendChild(row);
+
+  // Convenience: set weights = scene counts (per-scene fair airtime).
+  const actions = document.createElement('div');
+  actions.className = 'cw-actions';
+  const autoBtn = document.createElement('button');
+  autoBtn.className = 'btn small';
+  autoBtn.textContent = '컷 수에 맞춰 자동';
+  autoBtn.title = '각 카메라 가중치를 컷(씬) 개수로 설정 → 모든 컷이 비슷한 빈도로 노출';
+  autoBtn.addEventListener('click', () => updateTransition(t.id, { camera_weights: { ...counts } }));
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'btn small';
+  resetBtn.textContent = '균등';
+  resetBtn.title = '모든 카메라 가중치 1 (카메라마다 동일 빈도)';
+  resetBtn.addEventListener('click', () => {
+    const eq = {}; cams.forEach(c => eq[c] = 1);
+    updateTransition(t.id, { camera_weights: eq });
+  });
+  actions.append(autoBtn, resetBtn);
+  box.appendChild(actions);
+
+  if (maxShare > 0.5 + 1e-9) {
+    const warn = document.createElement('div');
+    warn.className = 'cw-warn';
+    warn.textContent = '⚠ 한 카메라가 50%를 넘어 같은 카메라가 연속으로 나올 수 있습니다.';
+    box.appendChild(warn);
+  }
+  return box;
 }
 
 async function loadTransitionPreview(transitionId, stripEl) {

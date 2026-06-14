@@ -304,8 +304,8 @@ class TransitionBody(BaseModel):
     name: str | None = None
     deck: list[str] | None = None
     interval_s: float | None = None
-    jitter_s: float | None = None
     camera_alternate: bool | None = None
+    camera_weights: dict[str, int] | None = None
 
 
 @app.get("/api/transitions")
@@ -320,8 +320,8 @@ def create_transition(body: TransitionBody):
         "name": body.name or "",
         "deck": body.deck or [],
         "interval_s": 8.0 if body.interval_s is None else body.interval_s,
-        "jitter_s": 0.0 if body.jitter_s is None else body.jitter_s,
         "camera_alternate": True if body.camera_alternate is None else body.camera_alternate,
+        "camera_weights": body.camera_weights or {},
     }
     def mutate(data):
         data.setdefault("transitions", []).append(transition)
@@ -341,10 +341,10 @@ def update_transition(transition_id: str, body: TransitionBody):
                     t["deck"] = body.deck
                 if body.interval_s is not None:
                     t["interval_s"] = body.interval_s
-                if body.jitter_s is not None:
-                    t["jitter_s"] = body.jitter_s
                 if body.camera_alternate is not None:
                     t["camera_alternate"] = body.camera_alternate
+                if body.camera_weights is not None:
+                    t["camera_weights"] = body.camera_weights
                 return data
         raise HTTPException(404, f"transition {transition_id} not found")
     return config_store.update(mutate)

@@ -348,13 +348,55 @@ class RuleEngine:
         return {m["id"]: m for m in (cfg.get("macros") or []) if m.get("id")}
 
     def _interval(self, transition: dict[str, Any]) -> float:
-        base = float(transition.get("interval_s", self.DEFAULT_INTERVAL_S))
+        try:
+            base = float(transition.get("interval_s", self.DEFAULT_INTERVAL_S))
+        except (TypeError, ValueError):
+            base = self.DEFAULT_INTERVAL_S
         if base <= 0:
             return 0.0  # 0 ⇒ no rotation (static single shot)
-        jit = float(transition.get("jitter_s", 0.0))
-        if jit > 0:
-            base = base + random.uniform(-jit, jit)
         return max(0.5, base)
+
+    @staticmethod
+    def _camera_weights(transition: dict[str, Any], cams: list[Any]) -> dict[Any, int]:
+        """Per-camera weight = how many times a camera appears in one rotation
+        round. Lets a camera with many scenes get proportionally more airtime
+        than a single-scene camera. Defaults to 1 (equal round-robin)."""
+        raw = transition.get("camera_weights") or {}
+        out: dict[Any, int] = {}
+        for c in cams:
+            w = raw.get(str(c), raw.get(c, 1))
+            try:
+                w = int(w)
+            except (TypeError, ValueError):
+                w = 1
+            out[c] = max(1, w)
+        return out
+
+    @staticmethod
+    def _build_camera_round(weights: dict[Any, int], prev_cam: Any,
+                            rng: random.Random | Any) -> list[Any]:
+        """Arrange one round: each camera appears `weight` times, ordered so no
+        two consecutive cameras are the same (and the first differs from the
+        previous round's last) whenever that is combinatorially possible —
+        always drawing from the camera with the most slots left. Falls back to
+        a repeat only when a camera's weight exceeds what the rest can separate."""
+        remaining = {c: n for c, n in weights.items() if n > 0}
+        seq: list[Any] = []
+        last = prev_cam
+        total = sum(remaining.values())
+        for _ in range(total):
+            cands = [c for c in remaining if remaining[c] > 0 and c != last]
+            if not cands:
+                cands = [c for c in remaining if remaining[c] > 0]
+            if not cands:
+                break
+            maxn = max(remaining[c] for c in cands)
+            top = [c for c in cands if remaining[c] == maxn]
+            pick = rng.choice(top)
+            seq.append(pick)
+            remaining[pick] -= 1
+            last = pick
+        return seq
 
     @staticmethod
     def _camera_order(deck: list[str], macro_index: dict[str, dict[str, Any]]) -> list[Any]:
@@ -415,16 +457,18 @@ class RuleEngine:
         if not cams:
             return
 
-        # Camera buffer: top up to a couple rounds so the full preview horizon
-        # is committed. Each appended round avoids repeating the prior camera.
+        # Camera buffer: top up by whole weighted rounds so the full preview
+        # horizon is committed. Each appended round avoids repeating the prior
+        # camera at its boundary.
+        weights = self._camera_weights(transition, cams)
+        round_len = max(1, sum(weights.values()))
         cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
-        buffer_len = max(2 * len(cams), self.PREVIEW_HORIZON + 1)
+        buffer_len = max(2 * round_len, self.PREVIEW_HORIZON + 1)
         last = cam_bag[-1] if cam_bag else rot.get("current_camera")
         while len(cam_bag) < buffer_len:
-            nb = list(cams)
-            rng.shuffle(nb)
-            if len(nb) > 1 and nb[0] == last:
-                nb.append(nb.pop(0))
+            nb = self._build_camera_round(weights, last, rng)
+            if not nb:
+                break
             cam_bag.extend(nb)
             last = nb[-1]
 
@@ -486,13 +530,11 @@ class RuleEngine:
         cams = self._camera_order(deck, macro_index)
         scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
 
-        # Pop the next camera (round-robin, committed order).
+        # Pop the next camera (weighted round, committed order).
         cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
         if not cam_bag:
-            cam_bag = list(cams)
-            rng.shuffle(cam_bag)
-            if len(cam_bag) > 1 and cam_bag[0] == rot.get("current_camera"):
-                cam_bag.append(cam_bag.pop(0))
+            weights = self._camera_weights(transition, cams)
+            cam_bag = self._build_camera_round(weights, rot.get("current_camera"), rng)
         cam = cam_bag.pop(0)
 
         # Pop the next scene within that camera (committed per-camera deck).
