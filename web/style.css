@@ -469,6 +469,14 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   margin-bottom: 14px;
 }
 .director.hidden { display: none; }
+.director.idle { opacity: 0.6; }
+.director .dh-rule.idle { color: var(--muted); font-weight: 600; }
+.director-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px 6px;
+  align-items: center;
+}
 .director-head {
   display: flex;
   align-items: center;

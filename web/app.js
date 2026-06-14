@@ -823,54 +823,92 @@ function camLabel(cam) {
 }
 
 // ── Live Director HUD (Monitor tab) ──────────────────────────────
+// The HUD is ALWAYS visible. When a transition rule is active it shows the
+// live ON-AIR shot + upcoming filmstrip; when no rule is active it stays in
+// place (dimmed) holding the last shots, so the list updates in place on a
+// rule change rather than vanishing and reappearing.
+let lastDirector = null;
 function renderDirector(engine) {
   const root = document.getElementById('director');
   if (!root) return;
+  root.classList.remove('hidden');  // always present
+
   const d = engine.director;
-  if (!d || !d.transition_id || !d.current) {
-    root.classList.add('hidden');
-    root.innerHTML = '';
+  const active = !!(d && d.transition_id && d.current);
+  if (active) {
+    lastDirector = {
+      transition_name: d.transition_name,
+      current: d.current,
+      upcoming: d.upcoming || [],
+      rule_name: engine.active_rule_name || '—',
+    };
+  }
+  root.classList.toggle('idle', !active);
+
+  const shown = active
+    ? {
+        transition_name: d.transition_name,
+        current: d.current,
+        upcoming: d.upcoming || [],
+        rule_name: engine.active_rule_name || '—',
+      }
+    : lastDirector;
+
+  // No transition has ever run yet → present, calm placeholder.
+  if (!shown || !shown.current) {
+    if (root.dataset.sig !== '__empty__') {
+      root.dataset.sig = '__empty__';
+      root.innerHTML =
+        '<div class="director-head"><div class="dh-left">' +
+        '<span class="dh-label">DIRECTOR</span>' +
+        '<span class="dh-rule idle">○ 대기 중</span></div></div>' +
+        '<div class="director-strip director-empty">활성 룰이 없습니다 — 룰이 매칭되면 트랜지션이 여기에 표시됩니다.</div>';
+    }
     return;
   }
-  root.classList.remove('hidden');
 
-  const interval = d.interval || 0;
-  const nextIn = (d.next_in === null || d.next_in === undefined) ? null : d.next_in;
-  const pct = (interval > 0 && nextIn !== null)
+  const interval = active ? (d.interval || 0) : 0;
+  const nextIn = active && d.next_in !== null && d.next_in !== undefined ? d.next_in : null;
+  const pct = (active && interval > 0 && nextIn !== null)
     ? Math.max(0, Math.min(100, (1 - nextIn / interval) * 100))
     : 0;
 
-  // Build a stable signature so we only rebuild DOM when the shot list changes;
-  // the countdown bar updates every tick without thrashing the filmstrip.
-  const upcoming = d.upcoming || [];
-  const sig = [d.current.macro_id, ...upcoming.map(u => u.macro_id)].join('>');
+  // Rebuild DOM only when the shot list (or active/idle state) changes; the
+  // countdown bar updates every tick without thrashing the filmstrip.
+  const sig = (active ? 'A:' : 'I:') +
+    [shown.current.macro_id, ...shown.upcoming.map(u => u.macro_id)].join('>');
   if (root.dataset.sig !== sig) {
     root.dataset.sig = sig;
+    const ruleHtml = active
+      ? `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`
+      : '<span class="dh-rule idle">○ 대기 중</span>';
     root.innerHTML = `
       <div class="director-head">
         <div class="dh-left">
           <span class="dh-label">DIRECTOR</span>
-          <span class="dh-rule">● ${escapeHtml(engine.active_rule_name || '—')}</span>
+          ${ruleHtml}
           <span class="dh-arrow">→</span>
-          <span class="dh-trans">🔄 ${escapeHtml(d.transition_name || '—')}</span>
+          <span class="dh-trans">🔄 ${escapeHtml(shown.transition_name || '—')}</span>
         </div>
         <div class="dh-right">
-          <span class="dh-next-label">다음 컷</span>
+          <span class="dh-next-label">${active ? '다음 컷' : '대기'}</span>
           <span class="dh-countbar"><span class="dh-countfill"></span></span>
           <span class="dh-countnum"></span>
         </div>
       </div>
       <div class="director-strip">
-        ${shotChip(d.current, 'now', 'ON AIR')}
+        ${shotChip(shown.current, 'now', active ? 'ON AIR' : '마지막')}
         <span class="ds-flow">▶</span>
-        ${upcoming.map((u, i) => shotChip(u, i === 0 ? 'next' : 'soon', i === 0 ? '다음' : '')).join('')}
+        ${shown.upcoming.map((u, i) => shotChip(u, i === 0 ? 'next' : 'soon', i === 0 ? '다음' : '')).join('')}
       </div>`;
   }
   // Live countdown (every tick)
   const fill = root.querySelector('.dh-countfill');
   const num = root.querySelector('.dh-countnum');
   if (fill) fill.style.width = pct + '%';
-  if (num) num.textContent = (nextIn !== null) ? `${nextIn.toFixed(1)}s` : (interval ? '' : '정지');
+  if (num) num.textContent = active
+    ? (nextIn !== null ? `${nextIn.toFixed(1)}s` : (interval ? '' : '정지'))
+    : '대기';
 }
 
 function shotChip(shot, kind, badge) {

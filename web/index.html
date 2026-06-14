@@ -53,8 +53,15 @@
 <main>
   <!-- ─ Monitor ────────────────────────────────────────────────── -->
   <section class="panel" id="panel-monitor">
-    <!-- Live "Director": active rule → transition, NOW shot + upcoming filmstrip -->
-    <div class="director hidden" id="director"></div>
+    <!-- Live "Director": always visible. Shows the active rule → transition,
+         NOW shot + upcoming filmstrip; stays in place (dimmed) when idle. -->
+    <div class="director idle" id="director">
+      <div class="director-head"><div class="dh-left">
+        <span class="dh-label">DIRECTOR</span>
+        <span class="dh-rule idle">○ 대기 중</span>
+      </div></div>
+      <div class="director-strip director-empty">활성 룰이 없습니다 — 룰이 매칭되면 트랜지션이 여기에 표시됩니다.</div>
+    </div>
 
     <div class="legend">
       <span><span class="dot" style="background:var(--green)"></span> 신호 있음</span>
