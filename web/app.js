@@ -1360,8 +1360,20 @@ function buildMacros() {
   const head = document.createElement('div');
   head.className = 'macro-row macro-head';
   head.innerHTML =
-    '<span>샷 이름</span><span>토큰 (ASS로 보낼 payload)</span><span>카메라</span><span>그룹</span><span></span>';
+    '<span>샷 이름</span><span>토큰 (ASS로 보낼 payload)</span><span>카메라</span>'
+    + '<span>그룹 (피사체)</span><span></span>';
   root.appendChild(head);
+
+  // Free-form group suggestions: groups already used on macros + channel
+  // group names (as a convenience), but the field accepts any text.
+  const sugg = new Set();
+  (state.config.macros || []).forEach(m => { if (m.group) sugg.add(m.group); });
+  Object.keys(state.config.groups || {}).forEach(g => sugg.add(g));
+  let dl = document.getElementById('macro-group-suggest');
+  if (!dl) { dl = document.createElement('datalist'); dl.id = 'macro-group-suggest'; document.body.appendChild(dl); }
+  dl.innerHTML = '';
+  [...sugg].sort().forEach(g => { const o = document.createElement('option'); o.value = g; dl.appendChild(o); });
+
   macros.forEach(m => root.appendChild(renderMacroRow(m)));
 }
 
@@ -1382,21 +1394,13 @@ function renderMacroRow(m) {
   cam.value = (m.camera === null || m.camera === undefined) ? '' : String(m.camera);
   cam.addEventListener('change', () => updateMacro(m.id, { camera: cam.value }));
 
-  // Group: reuse the project's channel groups so "그룹 교대" can avoid two
-  // same-subject shots in a row (e.g. two piano angles).
-  const grpSel = document.createElement('select');
-  grpSel.className = 'macro-group';
-  const none = document.createElement('option');
-  none.value = ''; none.textContent = '— 없음 —';
-  grpSel.appendChild(none);
-  Object.keys(state.config.groups || {}).forEach(g => {
-    const o = document.createElement('option');
-    o.value = g; o.textContent = g;
-    grpSel.appendChild(o);
-  });
-  grpSel.value = m.group || '';
-  if (m.group) grpSel.style.color = state.config.groups?.[m.group]?.color || '';
-  grpSel.addEventListener('change', () => updateMacro(m.id, { group: grpSel.value || null }));
+  // Group: free-form visual-subject tag for the "그룹 교대" anti-repeat option.
+  // Independent of channel groups — tag at whatever granularity you want
+  // (e.g. per-singer "Singer1"/"Singer2", or one "PIANO" for piano angles).
+  const grp = textInput('예: Singer1, PIANO', m.group || '');
+  grp.className = 'macro-group';
+  grp.setAttribute('list', 'macro-group-suggest');
+  grp.addEventListener('change', () => updateMacro(m.id, { group: grp.value.trim() || null }));
 
   const del = document.createElement('button');
   del.className = 'btn small danger';
@@ -1406,7 +1410,7 @@ function renderMacroRow(m) {
     await deleteMacro(m.id);
   });
 
-  row.append(name, token, cam, grpSel, del);
+  row.append(name, token, cam, grp, del);
   return row;
 }
 

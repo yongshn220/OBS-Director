@@ -189,17 +189,16 @@ def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
             ]
     project["channels"] = merged
 
-    # Macros (dedupe ids; keep first wins). Drop a macro's group if it no
-    # longer names an existing group, mirroring channel-group cleanup.
-    group_names = set(project.get("groups") or {})
+    # Macros (dedupe ids; keep first wins). The macro `group` is a FREE-FORM
+    # visual-subject tag (e.g. "Singer1", "PIANO") used only for the
+    # "그룹 교대" anti-repeat option — intentionally independent of the
+    # channel/audio groups, which are coarser, so it is NOT pruned against them.
     macros: list[dict[str, Any]] = []
     macro_ids: set[str] = set()
     for m in (project.get("macros") or []):
         nm = _normalize_macro(m)
         if nm["id"] in macro_ids:
             nm["id"] = new_macro_id()
-        if nm.get("group") and nm["group"] not in group_names:
-            nm["group"] = None
         macro_ids.add(nm["id"])
         macros.append(nm)
     project["macros"] = macros
