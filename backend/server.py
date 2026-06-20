@@ -246,6 +246,7 @@ class MacroBody(BaseModel):
     name: str | None = None
     token: str | None = None
     camera: str | int | None = None
+    group: str | None = None
 
 
 @app.get("/api/macros")
@@ -260,6 +261,7 @@ def create_macro(body: MacroBody):
         "name": body.name or "",
         "token": body.token or "",
         "camera": body.camera,
+        "group": body.group,
     }
     def mutate(data):
         data.setdefault("macros", []).append(macro)
@@ -279,6 +281,8 @@ def update_macro(macro_id: str, body: MacroBody):
                     m["token"] = body.token
                 if body.camera is not None or "camera" in body.model_fields_set:
                     m["camera"] = body.camera
+                if body.group is not None or "group" in body.model_fields_set:
+                    m["group"] = body.group
                 return data
         raise HTTPException(404, f"macro {macro_id} not found")
     return config_store.update(mutate)
@@ -306,6 +310,7 @@ class TransitionBody(BaseModel):
     interval_s: float | None = None
     camera_alternate: bool | None = None
     camera_weights: dict[str, int] | None = None
+    group_alternate: bool | None = None
 
 
 @app.get("/api/transitions")
@@ -322,6 +327,7 @@ def create_transition(body: TransitionBody):
         "interval_s": 8.0 if body.interval_s is None else body.interval_s,
         "camera_alternate": True if body.camera_alternate is None else body.camera_alternate,
         "camera_weights": body.camera_weights or {},
+        "group_alternate": bool(body.group_alternate),
     }
     def mutate(data):
         data.setdefault("transitions", []).append(transition)
@@ -345,6 +351,8 @@ def update_transition(transition_id: str, body: TransitionBody):
                     t["camera_alternate"] = body.camera_alternate
                 if body.camera_weights is not None:
                     t["camera_weights"] = body.camera_weights
+                if body.group_alternate is not None:
+                    t["group_alternate"] = body.group_alternate
                 return data
         raise HTTPException(404, f"transition {transition_id} not found")
     return config_store.update(mutate)

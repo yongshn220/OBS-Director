@@ -913,11 +913,13 @@ function renderDirector(engine) {
 
 function shotChip(shot, kind, badge) {
   const color = cameraColor(shot.camera);
+  const grp = shot.group ? `<span class="sc-grp">${escapeHtml(shot.group)}</span>` : '';
   return `
     <span class="shot-chip sc-${kind}" style="--cam:${color}">
       ${badge ? `<span class="sc-badge">${escapeHtml(badge)}</span>` : ''}
       <span class="sc-cam">${escapeHtml(camLabel(shot.camera))}</span>
       <span class="sc-name">${escapeHtml(shot.name || shot.macro_id || '')}</span>
+      ${grp}
     </span>`;
 }
 
@@ -1333,7 +1335,7 @@ async function deleteMacro(id) {
 }
 async function createTransition() {
   await apiSend('POST', '/api/transitions',
-    { name: '', deck: [], interval_s: 8, jitter_s: 0, camera_alternate: true });
+    { name: '', deck: [], interval_s: 8, camera_alternate: true });
   await refreshShotViews();
 }
 async function updateTransition(id, patch) {
@@ -1358,7 +1360,7 @@ function buildMacros() {
   const head = document.createElement('div');
   head.className = 'macro-row macro-head';
   head.innerHTML =
-    '<span>샷 이름</span><span>토큰 (ASS로 보낼 payload)</span><span>카메라</span><span></span>';
+    '<span>샷 이름</span><span>토큰 (ASS로 보낼 payload)</span><span>카메라</span><span>그룹</span><span></span>';
   root.appendChild(head);
   macros.forEach(m => root.appendChild(renderMacroRow(m)));
 }
@@ -1380,6 +1382,22 @@ function renderMacroRow(m) {
   cam.value = (m.camera === null || m.camera === undefined) ? '' : String(m.camera);
   cam.addEventListener('change', () => updateMacro(m.id, { camera: cam.value }));
 
+  // Group: reuse the project's channel groups so "그룹 교대" can avoid two
+  // same-subject shots in a row (e.g. two piano angles).
+  const grpSel = document.createElement('select');
+  grpSel.className = 'macro-group';
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = '— 없음 —';
+  grpSel.appendChild(none);
+  Object.keys(state.config.groups || {}).forEach(g => {
+    const o = document.createElement('option');
+    o.value = g; o.textContent = g;
+    grpSel.appendChild(o);
+  });
+  grpSel.value = m.group || '';
+  if (m.group) grpSel.style.color = state.config.groups?.[m.group]?.color || '';
+  grpSel.addEventListener('change', () => updateMacro(m.id, { group: grpSel.value || null }));
+
   const del = document.createElement('button');
   del.className = 'btn small danger';
   del.textContent = '삭제';
@@ -1388,7 +1406,7 @@ function renderMacroRow(m) {
     await deleteMacro(m.id);
   });
 
-  row.append(name, token, cam, del);
+  row.append(name, token, cam, grpSel, del);
   return row;
 }
 
@@ -1523,6 +1541,16 @@ function renderTransitionCard(t) {
   altLabel.append(alt, document.createTextNode(' 카메라 교대'));
   params.appendChild(altLabel);
 
+  const grpLabel = document.createElement('label');
+  grpLabel.className = 'alt-toggle';
+  grpLabel.title = '같은 그룹(피사체)인 샷이 연속으로 나오지 않게 (예: 피아노 → 피아노 방지)';
+  const grpAlt = document.createElement('input');
+  grpAlt.type = 'checkbox';
+  grpAlt.checked = t.group_alternate === true;
+  grpAlt.addEventListener('change', () => updateTransition(t.id, { group_alternate: grpAlt.checked }));
+  grpLabel.append(grpAlt, document.createTextNode(' 그룹 교대'));
+  params.appendChild(grpLabel);
+
   const hint = document.createElement('div');
   hint.className = 'transition-hint';
   hint.textContent = (t.interval_s ?? 8) <= 0
@@ -1651,9 +1679,10 @@ async function loadTransitionPreview(transitionId, stripEl) {
     stripEl.innerHTML = seq.map((s, i) => {
       const color = cameraColor(s.camera);
       const open = s.opening ? '<span class="pv-open">★</span>' : '';
+      const grp = s.group ? `<span class="pv-grp">${escapeHtml(s.group)}</span>` : '';
       return `<span class="pv-chip" style="--cam:${color}">${open}`
            + `<span class="pv-cam">${escapeHtml(camLabel(s.camera))}</span>`
-           + `<span class="pv-name">${escapeHtml(s.name || s.macro_id || '')}</span></span>`
+           + `<span class="pv-name">${escapeHtml(s.name || s.macro_id || '')}</span>${grp}</span>`
            + (i < seq.length - 1 ? '<span class="pv-arrow">›</span>' : '');
     }).join('');
   } catch {

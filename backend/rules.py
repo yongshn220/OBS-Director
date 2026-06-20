@@ -248,7 +248,7 @@ class RuleEngine:
                 if cur is not None:
                     director["current"] = {
                         "macro_id": cur_id, "name": cur.get("name"),
-                        "camera": cur.get("camera"),
+                        "camera": cur.get("camera"), "group": cur.get("group"),
                     }
                 director["upcoming"] = self._predict(rot, transition, macro_index, 5)
                 director["interval"] = round(
@@ -545,7 +545,22 @@ class RuleEngine:
             rng.shuffle(bag)
         if not bag:
             return None  # camera has no scenes (shouldn't happen)
-        choice = bag.pop(0)
+        # Group alternation (best-effort): prefer a scene whose group differs
+        # from the on-air shot's group, so two same-subject shots (e.g. two
+        # piano angles on different cameras) don't run back to back. Picks the
+        # first non-matching scene in the committed order; falls back to the
+        # front when this camera only offers the same group.
+        pick_idx = 0
+        if transition.get("group_alternate", False):
+            prev = macro_index.get(rot.get("current_macro_id"))
+            prev_group = prev.get("group") if prev else None
+            if prev_group:
+                pick_idx = next(
+                    (j for j, mid in enumerate(bag)
+                     if (macro_index[mid].get("group") or None) != prev_group),
+                    0,
+                )
+        choice = bag.pop(pick_idx)
         scene_bags[cam] = bag
 
         rot["cam_bag"] = cam_bag
@@ -584,7 +599,8 @@ class RuleEngine:
             m = self._draw_next(sim, transition, macro_index, rng=rng)
             if m is None:
                 break
-            out.append({"macro_id": m["id"], "name": m.get("name"), "camera": m.get("camera")})
+            out.append({"macro_id": m["id"], "name": m.get("name"),
+                        "camera": m.get("camera"), "group": m.get("group")})
         return out
 
     def preview_transition(self, transition: dict[str, Any],
@@ -601,7 +617,7 @@ class RuleEngine:
         m = self._draw_opening(rot, transition, macro_index, rng=rng)
         while m is not None and len(out) < n:
             out.append({"macro_id": m["id"], "name": m.get("name"),
-                        "camera": m.get("camera"),
+                        "camera": m.get("camera"), "group": m.get("group"),
                         "opening": len(out) == 0})
             m = self._draw_next(rot, transition, macro_index, rng=rng)
         return out

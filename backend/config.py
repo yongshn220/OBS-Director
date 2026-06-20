@@ -72,15 +72,20 @@ def _empty_project() -> dict[str, Any]:
 
 def _normalize_macro(m: dict[str, Any]) -> dict[str, Any]:
     """Coerce a macro entry. camera is kept as-is (str/int/None) so the engine
-    can compare equality; token is the payload POSTed to ASS to fire it."""
+    can compare equality; token is the payload POSTed to ASS to fire it; group
+    (optional) reuses a channel group name so a transition can avoid two
+    same-subject shots in a row."""
     cam = m.get("camera")
     if isinstance(cam, str):
         cam = cam.strip() or None
+    grp = m.get("group")
+    grp = grp.strip() if isinstance(grp, str) and grp.strip() else None
     return {
         "id": str(m.get("id") or new_macro_id()),
         "name": str(m.get("name") or ""),
         "token": str(m.get("token") or "").strip(),
         "camera": cam,
+        "group": grp,
     }
 
 
@@ -117,6 +122,7 @@ def _normalize_transition(t: dict[str, Any], valid_macro_ids: set[str]) -> dict[
         "interval_s": _to_float(t.get("interval_s"), 8.0),
         "camera_alternate": bool(t.get("camera_alternate", True)),
         "camera_weights": weights,
+        "group_alternate": bool(t.get("group_alternate", False)),
     }
 
 
@@ -183,13 +189,17 @@ def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
             ]
     project["channels"] = merged
 
-    # Macros (dedupe ids; keep first wins)
+    # Macros (dedupe ids; keep first wins). Drop a macro's group if it no
+    # longer names an existing group, mirroring channel-group cleanup.
+    group_names = set(project.get("groups") or {})
     macros: list[dict[str, Any]] = []
     macro_ids: set[str] = set()
     for m in (project.get("macros") or []):
         nm = _normalize_macro(m)
         if nm["id"] in macro_ids:
             nm["id"] = new_macro_id()
+        if nm.get("group") and nm["group"] not in group_names:
+            nm["group"] = None
         macro_ids.add(nm["id"])
         macros.append(nm)
     project["macros"] = macros

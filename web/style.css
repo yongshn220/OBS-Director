@@ -286,10 +286,19 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 .macros-table { display: flex; flex-direction: column; gap: 6px; }
 .macro-row {
   display: grid;
-  grid-template-columns: 1.4fr 1.4fr 80px 64px;
+  grid-template-columns: 1.3fr 1.3fr 70px 1fr 56px;
   gap: 8px;
   align-items: center;
 }
+.macro-row select.macro-group {
+  padding: 7px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+}
+.macro-row select.macro-group:focus { border-color: var(--blue); outline: none; }
 .macro-row.macro-head {
   font-size: 10px;
   text-transform: uppercase;
@@ -388,6 +397,11 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 .pv-chip .pv-cam { font-size: 8px; font-weight: 800; color: var(--cam); letter-spacing: 0.4px; }
 .pv-chip .pv-name { font-size: 12px; color: var(--text); }
 .pv-chip .pv-open { color: var(--cam); font-size: 10px; }
+.pv-chip .pv-grp {
+  font-size: 8px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; border: 1px solid var(--border-strong);
+  border-radius: 4px; padding: 0 3px;
+}
 .pv-arrow { color: var(--border-strong); }
 .deck-chip .dc-cam {
   font-size: 9px;
@@ -565,6 +579,12 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 .shot-chip .sc-name {
   font-size: 13px; font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+}
+.shot-chip .sc-grp {
+  font-size: 8px; font-weight: 700; letter-spacing: 0.3px;
+  color: var(--muted); text-transform: uppercase;
+  border: 1px solid var(--border-strong); border-radius: 5px;
+  padding: 0 4px; width: fit-content;
 }
 .shot-chip .sc-badge {
   position: absolute; top: -8px; left: 8px;
