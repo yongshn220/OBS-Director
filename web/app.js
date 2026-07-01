@@ -58,6 +58,7 @@ async function boot() {
   bindRuntimeToggles();
   bindAddRule();
   bindShotButtons();
+  bindDirectorOverride();
   bindConnectionsForm();
   bindProjectPill();
   renderRuntimeToggles();
@@ -834,6 +835,7 @@ function renderDirector(engine) {
   root.classList.remove('hidden');  // always present
 
   const d = engine.director;
+  const override = engine.override_transition_id || null;   // pinned transition id
   const active = !!(d && d.transition_id && d.current);
   if (active) {
     lastDirector = {
@@ -844,28 +846,17 @@ function renderDirector(engine) {
     };
   }
   root.classList.toggle('idle', !active);
+  root.classList.toggle('pinned', !!override);
 
-  const shown = active
-    ? {
-        transition_name: d.transition_name,
-        current: d.current,
-        upcoming: d.upcoming || [],
-        rule_name: engine.active_rule_name || '—',
-      }
-    : lastDirector;
+  const shown = active ? {
+    transition_name: d.transition_name,
+    current: d.current,
+    upcoming: d.upcoming || [],
+    rule_name: engine.active_rule_name || '—',
+  } : lastDirector;
 
-  // No transition has ever run yet → present, calm placeholder.
-  if (!shown || !shown.current) {
-    if (root.dataset.sig !== '__empty__') {
-      root.dataset.sig = '__empty__';
-      root.innerHTML =
-        '<div class="director-head"><div class="dh-left">' +
-        '<span class="dh-label">DIRECTOR</span>' +
-        '<span class="dh-rule idle">○ 대기 중</span></div></div>' +
-        '<div class="director-strip director-empty">활성 룰이 없습니다 — 룰이 매칭되면 트랜지션이 여기에 표시됩니다.</div>';
-    }
-    return;
-  }
+  const transitions = state.config.transitions || [];
+  const strip = overrideStripHtml(transitions, override);
 
   const interval = active ? (d.interval || 0) : 0;
   const nextIn = active && d.next_in !== null && d.next_in !== undefined ? d.next_in : null;
@@ -873,16 +864,22 @@ function renderDirector(engine) {
     ? Math.max(0, Math.min(100, (1 - nextIn / interval) * 100))
     : 0;
 
-  // Rebuild DOM only when the shot list (or active/idle state) changes; the
-  // countdown bar updates every tick without thrashing the filmstrip.
-  const sig = (active ? 'A:' : 'I:') +
-    [shown.current.macro_id, ...shown.upcoming.map(u => u.macro_id)].join('>');
-  if (root.dataset.sig !== sig) {
-    root.dataset.sig = sig;
-    const ruleHtml = active
-      ? `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`
+  let headBody;
+  if (!shown || !shown.current) {
+    const ruleHtml = override
+      ? '<span class="dh-rule pinned">🔒 수동 고정</span>'
       : '<span class="dh-rule idle">○ 대기 중</span>';
-    root.innerHTML = `
+    headBody =
+      `<div class="director-head"><div class="dh-left">`
+      + `<span class="dh-label">DIRECTOR</span>${ruleHtml}</div></div>`
+      + `<div class="director-strip director-empty">활성 룰이 없습니다 — 아래에서 수동 고정하거나, 룰이 매칭되면 표시됩니다.</div>`;
+  } else {
+    const ruleHtml = override
+      ? '<span class="dh-rule pinned">🔒 수동 고정</span>'
+      : (active
+          ? `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`
+          : '<span class="dh-rule idle">○ 대기 중</span>');
+    headBody = `
       <div class="director-head">
         <div class="dh-left">
           <span class="dh-label">DIRECTOR</span>
@@ -891,24 +888,71 @@ function renderDirector(engine) {
           <span class="dh-trans">🔄 ${escapeHtml(shown.transition_name || '—')}</span>
         </div>
         <div class="dh-right">
-          <span class="dh-next-label">${active ? '다음 컷' : '대기'}</span>
+          <span class="dh-next-label">${active ? (override ? '고정 · 다음' : '다음 컷') : '대기'}</span>
           <span class="dh-countbar"><span class="dh-countfill"></span></span>
           <span class="dh-countnum"></span>
         </div>
       </div>
       <div class="director-strip">
-        ${shotChip(shown.current, 'now', active ? 'ON AIR' : '마지막')}
+        ${shotChip(shown.current, 'now', override ? '고정' : (active ? 'ON AIR' : '마지막'))}
         <span class="ds-flow">▶</span>
         ${shown.upcoming.map((u, i) => shotChip(u, i === 0 ? 'next' : 'soon', i === 0 ? '다음' : '')).join('')}
       </div>`;
   }
-  // Live countdown (every tick)
+
+  // Rebuild DOM only when the shot list / state / override / transition set
+  // changes; the countdown updates every tick without thrashing the strip.
+  const shots = (shown && shown.current)
+    ? [shown.current.macro_id, ...shown.upcoming.map(u => u.macro_id)].join('>')
+    : '__empty__';
+  const sig = (active ? 'A' : (override ? 'P' : 'I')) + ':' + shots
+    + '|O:' + (override || '') + '|T:' + transitions.map(t => t.id).join(',');
+  if (root.dataset.sig !== sig) {
+    root.dataset.sig = sig;
+    root.innerHTML = headBody + strip;
+  }
   const fill = root.querySelector('.dh-countfill');
   const num = root.querySelector('.dh-countnum');
   if (fill) fill.style.width = pct + '%';
   if (num) num.textContent = active
     ? (nextIn !== null ? `${nextIn.toFixed(1)}s` : (interval ? '' : '정지'))
     : '대기';
+}
+
+// The "수동 고정" strip: [자동(룰)] + one button per transition. Clicking a
+// transition pins it (overrides rules); 자동(룰) releases back to rule control.
+function overrideStripHtml(transitions, overrideId) {
+  const autoOn = !overrideId;
+  let html = '<div class="director-override"><span class="ov-label">수동 고정</span>'
+    + `<button class="ov-btn ${autoOn ? 'ov-auto-on' : ''}" data-ov="auto">자동 (룰)</button>`;
+  transitions.forEach(t => {
+    const pinned = overrideId === t.id;
+    html += `<button class="ov-btn ${pinned ? 'ov-pinned' : ''}" data-ov="${escapeHtml(t.id)}">`
+      + `${pinned ? '🔒 ' : ''}${escapeHtml(t.name || '(이름 없음)')}</button>`;
+  });
+  return html + '</div>';
+}
+
+function bindDirectorOverride() {
+  const root = document.getElementById('director');
+  if (!root) return;
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('.ov-btn');
+    if (!btn) return;
+    const v = btn.dataset.ov;
+    setOverride(v === 'auto' ? null : v);
+  });
+}
+
+async function setOverride(transitionId) {
+  try {
+    await fetch('/api/override', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transition_id: transitionId }),
+    });
+    // The next WS tick refreshes the HUD (header + highlight).
+  } catch { /* ignore */ }
 }
 
 function shotChip(shot, kind, badge) {

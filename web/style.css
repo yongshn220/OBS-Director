@@ -516,7 +516,36 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   margin-bottom: 14px;
 }
 .director.hidden { display: none; }
-.director.idle { opacity: 0.6; }
+/* Dim only the header + filmstrip when idle — the override strip below stays
+   fully lit so the operator can still pin a transition. */
+.director.idle .director-head,
+.director.idle > .director-strip { opacity: 0.55; }
+.director.pinned { border-color: var(--yellow); }
+.director .dh-rule.pinned { color: var(--yellow); font-weight: 700; }
+
+/* 수동 고정 override strip */
+.director-override {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  border-top: 1px solid var(--border-strong);
+  margin-top: 10px; padding-top: 10px;
+}
+.director-override .ov-label {
+  font-size: 11px; color: var(--muted); margin-right: 2px;
+}
+.ov-btn {
+  font-size: 12px; padding: 5px 11px; border-radius: 6px;
+  border: 1px solid var(--border-strong); background: transparent;
+  color: var(--text); cursor: pointer; font-weight: 600;
+}
+.ov-btn:hover { border-color: var(--blue); }
+.ov-btn.ov-auto-on {
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  border-color: var(--green); color: var(--green);
+}
+.ov-btn.ov-pinned {
+  background: color-mix(in srgb, var(--yellow) 18%, transparent);
+  border-color: var(--yellow); color: var(--yellow);
+}
 .director .dh-rule.idle { color: var(--muted); font-weight: 600; }
 .director-empty {
   color: var(--muted);

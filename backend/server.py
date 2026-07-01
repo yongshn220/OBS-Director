@@ -365,7 +365,11 @@ def delete_transition(transition_id: str):
         data["transitions"] = [t for t in data.get("transitions", []) if t["id"] != transition_id]
         if len(data["transitions"]) == before:
             raise HTTPException(404, f"transition {transition_id} not found")
-        # _normalize_project prunes rule actions referencing this transition.
+        # _normalize_project prunes rule actions referencing this transition;
+        # also release a manual pin that pointed at it.
+        rt = data.get("runtime") or {}
+        if rt.get("override_transition_id") == transition_id:
+            rt["override_transition_id"] = None
         return data
     return config_store.update(mutate)
 
@@ -468,6 +472,24 @@ def patch_runtime(body: RuntimeBody):
             rt["auto"] = bool(body.auto)
         if body.dry_run is not None:
             rt["dry_run"] = bool(body.dry_run)
+        return data
+    return config_store.update(mutate)["runtime"]
+
+
+# ── REST: manual transition override (operator pin) ──────────────────
+
+class OverrideBody(BaseModel):
+    transition_id: str | None = None  # null = release back to rules
+
+
+@app.post("/api/override")
+def set_override(body: OverrideBody):
+    def mutate(data):
+        rt = data.setdefault("runtime", {})
+        tid = body.transition_id or None
+        if tid is not None and not any(t.get("id") == tid for t in data.get("transitions", [])):
+            raise HTTPException(400, f"unknown transition: {tid}")
+        rt["override_transition_id"] = tid
         return data
     return config_store.update(mutate)["runtime"]
 

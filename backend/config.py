@@ -140,6 +140,10 @@ def _default_globals() -> dict[str, Any]:
             "auto": True,
             "dry_run": True,
             "refire_s": 3.0,
+            # Operator's manual transition pin (null = rules choose). Always
+            # reset to null on startup so an auto-launched service never boots
+            # stuck on a hand-picked transition.
+            "override_transition_id": None,
         },
         "connections": {
             "ass_http": {"url": "http://localhost:7654/trigger", "method": "POST"},
@@ -305,6 +309,10 @@ class ConfigStore:
         for k, v in defaults_g.items():
             globals_raw.setdefault(k, v)
         globals_raw["current_project"] = current
+        # Clear any manual transition pin on startup — a hand override should
+        # never survive a restart (the app auto-launches at login).
+        if isinstance(globals_raw.get("runtime"), dict):
+            globals_raw["runtime"]["override_transition_id"] = None
 
         # Persist globals stripped of any legacy project keys.
         self._write_globals_file(globals_raw)

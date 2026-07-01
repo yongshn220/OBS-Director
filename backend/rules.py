@@ -105,6 +105,9 @@ class RuleEngine:
     LOG_MAX = 100
     DEFAULT_REFIRE_S = 3.0
     DEFAULT_INTERVAL_S = 8.0
+    # Synthetic rule id used when the operator pins a transition by hand
+    # (runtime.override_transition_id) instead of letting rules choose.
+    OVERRIDE_RULE_ID = "__override__"
 
     def __init__(self, config_store):
         self.config_store = config_store
@@ -127,16 +130,57 @@ class RuleEngine:
         dry_run: bool = bool(runtime.get("dry_run", True))
         auto: bool = bool(runtime.get("auto", True))
         refire_s: float = float(runtime.get("refire_s", self.DEFAULT_REFIRE_S))
+        override_id = runtime.get("override_transition_id") or None
 
         now = time.monotonic()
 
         if not auto:
+            if self.active_rule_id is not None:
+                self._release_active()
             return {
                 "active_rule_id": None,
                 "active_rule_name": None,
+                "active_macro": None,
+                "override_transition_id": override_id,
+                "director": self._empty_director(),
                 "fired": [],
+                "dry_run": dry_run,
+                "matching": [],
                 "reason": "manual",
             }
+
+        # ── Manual override: force a chosen transition, ignoring rules ──
+        if override_id:
+            forced = next((t for t in (cfg.get("transitions") or [])
+                           if t.get("id") == override_id), None)
+            if forced is not None:
+                fired: list[dict[str, Any]] = []
+                pseudo = {
+                    "id": self.OVERRIDE_RULE_ID, "name": "수동 고정",
+                    "actions": [{"type": "transition", "transition_id": override_id}],
+                }
+                if self.active_rule_id != self.OVERRIDE_RULE_ID:
+                    self.active_since = now
+                self.active_rule_id = self.OVERRIDE_RULE_ID
+                self._tick_rotation(pseudo, forced, cfg, now, dry_run, fired)
+                director = self._build_director(cfg, forced, now)
+                return {
+                    "active_rule_id": self.OVERRIDE_RULE_ID,
+                    "active_rule_name": "수동 고정",
+                    "active_cooldown_remaining": None,
+                    "active_macro": (director["current"] or {}).get("macro_id"),
+                    "override_transition_id": override_id,
+                    "director": director,
+                    "fired": fired,
+                    "dry_run": dry_run,
+                    "matching": [],
+                }
+            # Override points to a deleted transition → ignore, run rules.
+
+        # Leaving override (pin cleared or gone) → reset so rules re-open cleanly.
+        if self.active_rule_id == self.OVERRIDE_RULE_ID:
+            self._release_active()
+            self.active_since = now
 
         ordered = sorted(
             [r for r in rules if r.get("enabled", True)],
@@ -229,33 +273,14 @@ class RuleEngine:
             })
 
         # ── Live "Director" info for the active transition rotation ──
-        director: dict[str, Any] = {
-            "transition_id": None, "transition_name": None,
-            "current": None, "upcoming": [],
-            "next_in": None, "interval": None,
-        }
+        director = self._empty_director()
         rot = self._rotation
         if (self.active_rule_id is not None and rot
                 and rot.get("rule_id") == self.active_rule_id):
-            macro_index = self._macro_index(cfg)
             active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
             transition = self._resolve_transition(cfg, active_rule) if active_rule else None
             if transition is not None:
-                cur_id = rot.get("current_macro_id")
-                cur = macro_index.get(cur_id) if cur_id else None
-                director["transition_id"] = transition.get("id")
-                director["transition_name"] = transition.get("name")
-                if cur is not None:
-                    director["current"] = {
-                        "macro_id": cur_id, "name": cur.get("name"),
-                        "camera": cur.get("camera"), "group": cur.get("group"),
-                    }
-                director["upcoming"] = self._predict(rot, transition, macro_index, 5)
-                director["interval"] = round(
-                    float(transition.get("interval_s", self.DEFAULT_INTERVAL_S)), 2)
-                nxt = rot.get("next_at")
-                if nxt is not None and nxt != float("inf"):
-                    director["next_in"] = round(max(0.0, nxt - now), 2)
+                director = self._build_director(cfg, transition, now)
 
         return {
             "active_rule_id": self.active_rule_id,
@@ -265,11 +290,44 @@ class RuleEngine:
                 if active_rule_cooldown_remaining is not None else None
             ),
             "active_macro": (director["current"] or {}).get("macro_id"),
+            "override_transition_id": None,
             "director": director,
             "fired": fired,
             "dry_run": dry_run,
             "matching": queue,
         }
+
+    @staticmethod
+    def _empty_director() -> dict[str, Any]:
+        return {
+            "transition_id": None, "transition_name": None,
+            "current": None, "upcoming": [],
+            "next_in": None, "interval": None,
+        }
+
+    def _build_director(self, cfg: dict[str, Any], transition: dict[str, Any],
+                        now: float) -> dict[str, Any]:
+        """Live Director payload from the current rotation state + transition."""
+        d = self._empty_director()
+        rot = self._rotation
+        if not rot or transition is None:
+            return d
+        macro_index = self._macro_index(cfg)
+        cur_id = rot.get("current_macro_id")
+        cur = macro_index.get(cur_id) if cur_id else None
+        d["transition_id"] = transition.get("id")
+        d["transition_name"] = transition.get("name")
+        if cur is not None:
+            d["current"] = {
+                "macro_id": cur_id, "name": cur.get("name"),
+                "camera": cur.get("camera"), "group": cur.get("group"),
+            }
+        d["upcoming"] = self._predict(rot, transition, macro_index, 5)
+        d["interval"] = round(float(transition.get("interval_s", self.DEFAULT_INTERVAL_S)), 2)
+        nxt = rot.get("next_at")
+        if nxt is not None and nxt != float("inf"):
+            d["next_in"] = round(max(0.0, nxt - now), 2)
+        return d
 
     def recent_log(self, limit: int = 30) -> list[dict[str, Any]]:
         return list(self._action_log)[-limit:]
