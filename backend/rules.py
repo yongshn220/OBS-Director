@@ -119,6 +119,8 @@ class RuleEngine:
         #   {rule_id, transition_id, deck_remaining[list], current_macro_id,
         #    current_camera, next_at, refire_at}
         self._rotation: dict[str, Any] | None = None
+        # Macro id currently held by a manual shot pin (fire once on change).
+        self._held_macro_id: str | None = None
         self._action_log: deque[dict[str, Any]] = deque(maxlen=self.LOG_MAX)
 
     # ── Public ────────────────────────────────────────────────────
@@ -131,23 +133,62 @@ class RuleEngine:
         auto: bool = bool(runtime.get("auto", True))
         refire_s: float = float(runtime.get("refire_s", self.DEFAULT_REFIRE_S))
         override_id = runtime.get("override_transition_id") or None
+        override_macro_id = runtime.get("override_macro_id") or None
 
         now = time.monotonic()
 
         if not auto:
             if self.active_rule_id is not None:
                 self._release_active()
+            self._held_macro_id = None
             return {
                 "active_rule_id": None,
                 "active_rule_name": None,
                 "active_macro": None,
                 "override_transition_id": override_id,
+                "override_macro_id": override_macro_id,
                 "director": self._empty_director(),
                 "fired": [],
                 "dry_run": dry_run,
                 "matching": [],
                 "reason": "manual",
             }
+
+        # ── Manual shot pin: hold ONE macro, ignore rules + rotation ──
+        if override_macro_id:
+            macro_index = self._macro_index(cfg)
+            macro = macro_index.get(override_macro_id)
+            if macro is not None:
+                fired = []
+                if self._held_macro_id != override_macro_id or self.active_rule_id != "__shot__":
+                    self._rotation = None
+                    self.active_rule_id = "__shot__"
+                    self.active_since = now
+                    self._held_macro_id = override_macro_id
+                    cam = macro.get("camera")
+                    cam_str = f" (cam{cam})" if cam not in (None, "") else ""
+                    action = {"type": "http_request", "method": "", "url": "",
+                              "body": str(macro.get("token") or "")}
+                    fired.append(self._fire(
+                        {"id": "__shot__", "name": "수동 샷"}, action, dry_run, now, "manual",
+                        detail=f"수동 샷 → {macro.get('name') or ''}{cam_str}",
+                        extra={"macro_id": override_macro_id, "macro_name": macro.get("name"),
+                               "camera": cam, "group": macro.get("group"),
+                               "token": macro.get("token")}))
+                director = self._empty_director()
+                director["transition_name"] = "수동 샷"
+                director["current"] = {
+                    "macro_id": override_macro_id, "name": macro.get("name"),
+                    "camera": macro.get("camera"), "group": macro.get("group"),
+                }
+                return {
+                    "active_rule_id": "__shot__", "active_rule_name": "수동 샷",
+                    "active_cooldown_remaining": None, "active_macro": override_macro_id,
+                    "override_transition_id": override_id, "override_macro_id": override_macro_id,
+                    "director": director, "fired": fired, "dry_run": dry_run, "matching": [],
+                }
+            # Pinned macro was deleted → fall through.
+        self._held_macro_id = None
 
         # ── Manual override: force a chosen transition, ignoring rules ──
         if override_id:
@@ -170,6 +211,7 @@ class RuleEngine:
                     "active_cooldown_remaining": None,
                     "active_macro": (director["current"] or {}).get("macro_id"),
                     "override_transition_id": override_id,
+                    "override_macro_id": None,
                     "director": director,
                     "fired": fired,
                     "dry_run": dry_run,
@@ -291,6 +333,7 @@ class RuleEngine:
             ),
             "active_macro": (director["current"] or {}).get("macro_id"),
             "override_transition_id": None,
+            "override_macro_id": None,
             "director": director,
             "fired": fired,
             "dry_run": dry_run,

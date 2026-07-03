@@ -835,100 +835,135 @@ function renderDirector(engine) {
   root.classList.remove('hidden');  // always present
 
   const d = engine.director;
-  const override = engine.override_transition_id || null;   // pinned transition id
+  const pinTrans = engine.override_transition_id || null;   // pinned transition
+  const heldShot = engine.override_macro_id || null;        // held single shot
   const active = !!(d && d.transition_id && d.current);
   if (active) {
     lastDirector = {
-      transition_name: d.transition_name,
-      current: d.current,
-      upcoming: d.upcoming || [],
-      rule_name: engine.active_rule_name || '—',
+      transition_name: d.transition_name, current: d.current,
+      upcoming: d.upcoming || [], rule_name: engine.active_rule_name || '—',
     };
   }
   root.classList.toggle('idle', !active);
-  root.classList.toggle('pinned', !!override);
+  root.classList.toggle('pinned', !!pinTrans);
+  root.classList.toggle('shot', !!heldShot);
 
   const shown = active ? {
-    transition_name: d.transition_name,
-    current: d.current,
-    upcoming: d.upcoming || [],
-    rule_name: engine.active_rule_name || '—',
+    transition_name: d.transition_name, current: d.current,
+    upcoming: d.upcoming || [], rule_name: engine.active_rule_name || '—',
   } : lastDirector;
 
   const transitions = state.config.transitions || [];
-  const strip = overrideStripHtml(transitions, override);
+  const macros = state.config.macros || [];
+  const controls = overrideStripHtml(transitions, pinTrans, heldShot)
+    + shotPaletteHtml(macros, heldShot);
 
-  const interval = active ? (d.interval || 0) : 0;
-  const nextIn = active && d.next_in !== null && d.next_in !== undefined ? d.next_in : null;
-  const pct = (active && interval > 0 && nextIn !== null)
-    ? Math.max(0, Math.min(100, (1 - nextIn / interval) * 100))
-    : 0;
+  const interval = (active && !heldShot) ? (d.interval || 0) : 0;
+  const nextIn = (active && !heldShot && d.next_in !== null && d.next_in !== undefined) ? d.next_in : null;
+  const pct = (interval > 0 && nextIn !== null)
+    ? Math.max(0, Math.min(100, (1 - nextIn / interval) * 100)) : 0;
 
   let headBody;
   if (!shown || !shown.current) {
-    const ruleHtml = override
+    const ruleHtml = pinTrans
       ? '<span class="dh-rule pinned">🔒 수동 고정</span>'
       : '<span class="dh-rule idle">○ 대기 중</span>';
     headBody =
       `<div class="director-head"><div class="dh-left">`
       + `<span class="dh-label">DIRECTOR</span>${ruleHtml}</div></div>`
-      + `<div class="director-strip director-empty">활성 룰이 없습니다 — 아래에서 수동 고정하거나, 룰이 매칭되면 표시됩니다.</div>`;
+      + `<div class="director-strip director-empty">활성 룰이 없습니다 — 아래에서 트랜지션·샷을 수동 선택하거나, 룰이 매칭되면 표시됩니다.</div>`;
   } else {
-    const ruleHtml = override
-      ? '<span class="dh-rule pinned">🔒 수동 고정</span>'
-      : (active
-          ? `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`
-          : '<span class="dh-rule idle">○ 대기 중</span>');
+    let ruleHtml, transText, transIcon, nextLabel, nowBadge;
+    if (heldShot) {
+      ruleHtml = '<span class="dh-rule shot">🔴 수동 샷</span>';
+      transText = shown.current.name || ''; transIcon = ''; nextLabel = '고정'; nowBadge = 'LIVE';
+    } else if (pinTrans) {
+      ruleHtml = '<span class="dh-rule pinned">🔒 수동 고정</span>';
+      transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '고정 · 다음'; nowBadge = '고정';
+    } else if (active) {
+      ruleHtml = `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`;
+      transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '다음 컷'; nowBadge = 'ON AIR';
+    } else {
+      ruleHtml = '<span class="dh-rule idle">○ 대기 중</span>';
+      transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '대기'; nowBadge = '마지막';
+    }
     headBody = `
       <div class="director-head">
         <div class="dh-left">
           <span class="dh-label">DIRECTOR</span>
           ${ruleHtml}
           <span class="dh-arrow">→</span>
-          <span class="dh-trans">🔄 ${escapeHtml(shown.transition_name || '—')}</span>
+          <span class="dh-trans">${transIcon}${escapeHtml(transText)}</span>
         </div>
         <div class="dh-right">
-          <span class="dh-next-label">${active ? (override ? '고정 · 다음' : '다음 컷') : '대기'}</span>
+          <span class="dh-next-label">${nextLabel}</span>
           <span class="dh-countbar"><span class="dh-countfill"></span></span>
           <span class="dh-countnum"></span>
         </div>
       </div>
       <div class="director-strip">
-        ${shotChip(shown.current, 'now', override ? '고정' : (active ? 'ON AIR' : '마지막'))}
-        <span class="ds-flow">▶</span>
-        ${shown.upcoming.map((u, i) => shotChip(u, i === 0 ? 'next' : 'soon', i === 0 ? '다음' : '')).join('')}
+        ${shotChip(shown.current, 'now', nowBadge)}
+        ${heldShot ? '' : `<span class="ds-flow">▶</span>`
+          + shown.upcoming.map((u, i) => shotChip(u, i === 0 ? 'next' : 'soon', i === 0 ? '다음' : '')).join('')}
       </div>`;
   }
 
-  // Rebuild DOM only when the shot list / state / override / transition set
-  // changes; the countdown updates every tick without thrashing the strip.
+  // Rebuild DOM only when state / shots / pins / macro-set changes; the
+  // countdown updates every tick without thrashing the controls.
   const shots = (shown && shown.current)
-    ? [shown.current.macro_id, ...shown.upcoming.map(u => u.macro_id)].join('>')
+    ? [shown.current.macro_id, ...(heldShot ? [] : shown.upcoming.map(u => u.macro_id))].join('>')
     : '__empty__';
-  const sig = (active ? 'A' : (override ? 'P' : 'I')) + ':' + shots
-    + '|O:' + (override || '') + '|T:' + transitions.map(t => t.id).join(',');
+  const sig = (heldShot ? 'S' : (active ? 'A' : (pinTrans ? 'P' : 'I'))) + ':' + shots
+    + '|O:' + (pinTrans || '') + '|M:' + (heldShot || '')
+    + '|T:' + transitions.map(t => t.id).join(',')
+    + '|X:' + macros.map(m => m.id).join(',');
   if (root.dataset.sig !== sig) {
     root.dataset.sig = sig;
-    root.innerHTML = headBody + strip;
+    root.innerHTML = headBody + controls;
   }
   const fill = root.querySelector('.dh-countfill');
   const num = root.querySelector('.dh-countnum');
   if (fill) fill.style.width = pct + '%';
-  if (num) num.textContent = active
-    ? (nextIn !== null ? `${nextIn.toFixed(1)}s` : (interval ? '' : '정지'))
-    : '대기';
+  if (num) num.textContent = heldShot ? ''
+    : (active ? (nextIn !== null ? `${nextIn.toFixed(1)}s` : (interval ? '' : '정지')) : '대기');
 }
 
-// The "수동 고정" strip: [자동(룰)] + one button per transition. Clicking a
-// transition pins it (overrides rules); 자동(룰) releases back to rule control.
-function overrideStripHtml(transitions, overrideId) {
-  const autoOn = !overrideId;
+// "수동 고정" strip: [자동(룰)] + one button per transition.
+function overrideStripHtml(transitions, pinTrans, heldShot) {
+  const autoOn = !pinTrans && !heldShot;
   let html = '<div class="director-override"><span class="ov-label">수동 고정</span>'
     + `<button class="ov-btn ${autoOn ? 'ov-auto-on' : ''}" data-ov="auto">자동 (룰)</button>`;
   transitions.forEach(t => {
-    const pinned = overrideId === t.id;
+    const pinned = pinTrans === t.id;
     html += `<button class="ov-btn ${pinned ? 'ov-pinned' : ''}" data-ov="${escapeHtml(t.id)}">`
       + `${pinned ? '🔒 ' : ''}${escapeHtml(t.name || '(이름 없음)')}</button>`;
+  });
+  return html + '</div>';
+}
+
+// "수동 샷" palette: a switcher grid of every macro grouped by camera. Click a
+// shot to take it live and hold; 해제 releases back to auto/rules.
+function shotPaletteHtml(macros, heldShot) {
+  let html = '<div class="director-shots"><div class="sh-head"><span class="ov-label">수동 샷</span>'
+    + `<button class="sh-btn sh-release" data-shot="release">해제</button></div>`;
+  if (!macros.length) {
+    return html + '<span class="sh-empty">Macros 탭에서 매크로를 먼저 만드세요.</span></div>';
+  }
+  const byCam = {};
+  macros.forEach(m => {
+    const c = (m.camera === null || m.camera === undefined || m.camera === '') ? '' : String(m.camera);
+    (byCam[c] = byCam[c] || []).push(m);
+  });
+  Object.keys(byCam).sort().forEach(c => {
+    const color = cameraColor(c);
+    html += `<div class="sh-camrow"><span class="sh-camlabel" style="color:${color}">${escapeHtml(camLabel(c))}</span>`;
+    byCam[c].forEach(m => {
+      const on = heldShot === m.id;
+      const grp = m.group ? ` <span class="sh-grp">${escapeHtml(m.group)}</span>` : '';
+      html += `<button class="sh-btn ${on ? 'sh-on' : ''}" data-shot="${escapeHtml(m.id)}" style="--cam:${color}">`
+        + `${escapeHtml(m.name || m.token || m.id)}${grp}</button>`;
+    });
+    html += '</div>';
   });
   return html + '</div>';
 }
@@ -937,10 +972,10 @@ function bindDirectorOverride() {
   const root = document.getElementById('director');
   if (!root) return;
   root.addEventListener('click', (e) => {
-    const btn = e.target.closest('.ov-btn');
-    if (!btn) return;
-    const v = btn.dataset.ov;
-    setOverride(v === 'auto' ? null : v);
+    const ov = e.target.closest('.ov-btn');
+    if (ov) { setOverride(ov.dataset.ov === 'auto' ? null : ov.dataset.ov); return; }
+    const sh = e.target.closest('.sh-btn');
+    if (sh) { setShotOverride(sh.dataset.shot === 'release' ? null : sh.dataset.shot); return; }
   });
 }
 
@@ -952,6 +987,16 @@ async function setOverride(transitionId) {
       body: JSON.stringify({ transition_id: transitionId }),
     });
     // The next WS tick refreshes the HUD (header + highlight).
+  } catch { /* ignore */ }
+}
+
+async function setShotOverride(macroId) {
+  try {
+    await fetch('/api/override/shot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ macro_id: macroId }),
+    });
   } catch { /* ignore */ }
 }
 

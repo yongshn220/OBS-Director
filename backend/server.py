@@ -295,7 +295,11 @@ def delete_macro(macro_id: str):
         data["macros"] = [m for m in data.get("macros", []) if m["id"] != macro_id]
         if len(data["macros"]) == before:
             raise HTTPException(404, f"macro {macro_id} not found")
-        # _normalize_project strips this id from every transition deck.
+        # _normalize_project strips this id from every transition deck;
+        # also release a manual shot pin that pointed at it.
+        rt = data.get("runtime") or {}
+        if rt.get("override_macro_id") == macro_id:
+            rt["override_macro_id"] = None
         return data
     return config_store.update(mutate)
 
@@ -476,7 +480,9 @@ def patch_runtime(body: RuntimeBody):
     return config_store.update(mutate)["runtime"]
 
 
-# ── REST: manual transition override (operator pin) ──────────────────
+# ── REST: manual overrides (operator pins) ───────────────────────────
+# At most one manual selection is active: a transition pin OR a shot pin.
+# Setting one clears the other; a null transition_id ("자동/룰") clears both.
 
 class OverrideBody(BaseModel):
     transition_id: str | None = None  # null = release back to rules
@@ -490,6 +496,25 @@ def set_override(body: OverrideBody):
         if tid is not None and not any(t.get("id") == tid for t in data.get("transitions", [])):
             raise HTTPException(400, f"unknown transition: {tid}")
         rt["override_transition_id"] = tid
+        rt["override_macro_id"] = None   # picking a transition (or auto) drops any shot pin
+        return data
+    return config_store.update(mutate)["runtime"]
+
+
+class ShotOverrideBody(BaseModel):
+    macro_id: str | None = None  # null = release the shot pin
+
+
+@app.post("/api/override/shot")
+def set_shot_override(body: ShotOverrideBody):
+    def mutate(data):
+        rt = data.setdefault("runtime", {})
+        mid = body.macro_id or None
+        if mid is not None and not any(m.get("id") == mid for m in data.get("macros", [])):
+            raise HTTPException(400, f"unknown macro: {mid}")
+        rt["override_macro_id"] = mid
+        if mid is not None:
+            rt["override_transition_id"] = None   # taking a single shot drops the transition pin
         return data
     return config_store.update(mutate)["runtime"]
 
