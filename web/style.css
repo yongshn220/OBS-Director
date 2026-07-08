@@ -766,6 +766,13 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
     var(--green) 0%, var(--green) 60%,
     var(--yellow) 75%, var(--red) 90%
   );
+  /* Anchor the gradient to the FULL track height (not the fill's own
+     variable height) so a given dB always maps to the same color. Without
+     this the gradient is squeezed into a short fill and quiet levels show
+     the red top. The fill only reveals the bottom slice as it grows. */
+  background-size: 100% var(--grid-h);
+  background-position: left bottom;
+  background-repeat: no-repeat;
 }
 .vu-db {
   font-family: 'JetBrains Mono', monospace;
