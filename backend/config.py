@@ -20,7 +20,7 @@ PROJECTS_DIR = CONFIG_PATH.parent / "projects"
 
 # Keys that live inside a project file (per-project setup the user switches
 # between for different services / events).
-PROJECT_KEYS = ("channels", "groups", "macros", "transitions", "rules")
+PROJECT_KEYS = ("channels", "groups", "roles", "macros", "transitions", "rules")
 # Keys that stay in the global config.json — hardware/runtime state that
 # applies regardless of which project is active.
 GLOBAL_KEYS = ("audio", "connections", "runtime", "current_project")
@@ -30,11 +30,17 @@ PROJECT_NAME_RE = re.compile(r"^[\w\s가-힣ㄱ-ㅎㅏ-ㅣ\-]{1,40}$", flags=re.
 
 DEFAULT_CHANNELS = 32
 
+# Groups = coarse categories (rule matching), with attack/release timing.
 DEFAULT_GROUPS: dict[str, dict[str, Any]] = {
     "singers":     {"attack_ms": 200, "release_ms": 1500, "color": "#00ff88"},
     "instruments": {"attack_ms": 150, "release_ms": 800,  "color": "#4488ff"},
     "pastor":      {"attack_ms": 150, "release_ms": 1200, "color": "#ffd700"},
 }
+
+# Roles = fine subject identities (dynamic-planning shot targets). Each role
+# belongs to ONE group and inherits that group's timing. Shape:
+#   {role_name: {"group": <group_name|None>, "color": "#rrggbb"}}
+DEFAULT_ROLES: dict[str, dict[str, Any]] = {}
 
 
 class ProjectNameError(ValueError):
@@ -53,17 +59,21 @@ def _validate_project_name(name: str) -> str:
 
 
 def _default_channels() -> list[dict[str, Any]]:
+    # A channel picks ONE role (fine identity) and belongs to ONE group (coarse
+    # category). group is normally derived from the role, but may be set alone
+    # for a role-less channel. Both default to None (unconfigured).
     return [
-        {"id": i + 1, "name": "", "groups": [], "threshold_db": -45.0}
+        {"id": i + 1, "name": "", "role": None, "group": None, "threshold_db": -45.0}
         for i in range(DEFAULT_CHANNELS)
     ]
 
 
 def _empty_project() -> dict[str, Any]:
-    """A fresh project: default channels, seed groups, no rules/macros/transitions."""
+    """A fresh project: default channels, seed groups, no roles/rules/macros/transitions."""
     return {
         "channels": _default_channels(),
         "groups": dict(DEFAULT_GROUPS),
+        "roles": dict(DEFAULT_ROLES),
         "macros": [],
         "transitions": [],
         "rules": [],
@@ -74,18 +84,31 @@ def _normalize_macro(m: dict[str, Any]) -> dict[str, Any]:
     """Coerce a macro entry. camera is kept as-is (str/int/None) so the engine
     can compare equality; token is the payload POSTed to ASS to fire it; group
     (optional) reuses a channel group name so a transition can avoid two
-    same-subject shots in a row."""
+    same-subject shots in a row; sources is the set of AUDIO group names whose
+    live activity should surface this shot in dynamic-planning mode."""
     cam = m.get("camera")
     if isinstance(cam, str):
         cam = cam.strip() or None
     grp = m.get("group")
     grp = grp.strip() if isinstance(grp, str) and grp.strip() else None
+    # sources: audio-group names this shot represents. Free-form (NOT pruned
+    # against the group list, like `group`) — the dynamic planner simply
+    # intersects it with the live active-group set, so a stale name is a
+    # harmless no-op rather than lost data on a transient group rename.
+    sources: list[str] = []
+    seen: set[str] = set()
+    for s in (m.get("sources") or []):
+        s = str(s).strip()
+        if s and s not in seen:
+            seen.add(s)
+            sources.append(s)
     return {
         "id": str(m.get("id") or new_macro_id()),
         "name": str(m.get("name") or ""),
         "token": str(m.get("token") or "").strip(),
         "camera": cam,
         "group": grp,
+        "sources": sources,
     }
 
 
@@ -140,6 +163,13 @@ def _default_globals() -> dict[str, Any]:
             "auto": True,
             "dry_run": True,
             "refire_s": 3.0,
+            # Director mode: "rules" (match rules → pick a transition) or
+            # "dynamic" (build the rotation live from whichever audio groups are
+            # active right now). Persists across restarts — it's a deliberate
+            # operating mode, not a transient pin.
+            "director_mode": "rules",
+            # Dynamic-planning knobs (used only in "dynamic" mode).
+            "dynamic": {"interval_s": 8.0, "group_alternate": True},
             # Operator's manual pins (null = rules choose). override_macro_id
             # holds one shot; override_transition_id forces one transition.
             # Both reset to null on startup so an auto-launched service never
@@ -162,17 +192,45 @@ def _default_config() -> dict[str, Any]:
 
 def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
     """Ensure a project dict has all required keys with sane shapes, migrate
-    legacy single-group channels to the groups-list schema, and keep macro /
-    transition / rule references internally consistent (no dangling ids)."""
+    legacy channels to the role/group schema, and keep role / macro / transition
+    / rule references internally consistent (no dangling ids).
+
+    Model: channel → role → group. A channel picks one role (fine subject
+    identity) and belongs to one group (coarse category); the group is derived
+    from the role when a role is set. Roles each belong to one group and inherit
+    its attack/release timing."""
     project.setdefault("channels", _default_channels())
     project.setdefault("groups", dict(DEFAULT_GROUPS))
+    project.setdefault("roles", dict(DEFAULT_ROLES))
     project.setdefault("macros", [])
     project.setdefault("transitions", [])
     project.setdefault("rules", [])
 
-    # Top-up channels list to DEFAULT_CHANNELS so the UI grid is always full.
-    # Drop malformed (non-dict / id-less) entries rather than crashing; the
-    # merge loop rebuilds the full 1..N grid from defaults anyway.
+    groups = project.get("groups")
+    if not isinstance(groups, dict):
+        groups = dict(DEFAULT_GROUPS)
+    project["groups"] = groups
+
+    # Roles: {name: {group: <existing group|None>, color}}. A role's group is
+    # pruned to an existing group (dangling → None) so activity/UI never point
+    # at a deleted group; the role itself survives for re-assignment.
+    roles: dict[str, dict[str, Any]] = {}
+    raw_roles = project.get("roles")
+    if isinstance(raw_roles, dict):
+        for rname, r in raw_roles.items():
+            rname = str(rname).strip()
+            if not rname:
+                continue
+            r = r if isinstance(r, dict) else {}
+            g = r.get("group")
+            roles[rname] = {
+                "group": g if g in groups else None,
+                "color": str(r.get("color") or "#888888"),
+            }
+    project["roles"] = roles
+
+    # Top-up channels to DEFAULT_CHANNELS so the UI grid is always full. Drop
+    # malformed (non-dict / id-less) entries; the merge rebuilds the 1..N grid.
     existing = {
         c["id"]: c for c in (project.get("channels") or [])
         if isinstance(c, dict) and "id" in c
@@ -181,18 +239,27 @@ def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
     for c in _default_channels():
         merged.append(existing.get(c["id"], c))
 
-    # Migrate legacy ch.group: str|None  →  ch.groups: list[str]
+    # Normalize each channel to {id, name, role, group, threshold_db}:
+    #   - role pruned to an existing role (else None)
+    #   - group derived from the role when set; else the channel's own group, or
+    #     migrated from a legacy `groups:[..]` list (first) / `group` string.
+    #     Pruned to an existing group.
     for ch in merged:
-        if "groups" not in ch:
-            legacy = ch.pop("group", None)
-            ch["groups"] = [legacy] if legacy else []
+        role = ch.get("role")
+        role = role if role in roles else None
+        if role is not None:
+            grp = roles[role]["group"]
         else:
-            ch.pop("group", None)
-            seen: set[str] = set()
-            ch["groups"] = [
-                g for g in (ch.get("groups") or [])
-                if g and not (g in seen or seen.add(g))
-            ]
+            grp = ch.get("group")
+            if grp is None:
+                legacy_list = ch.get("groups") or []
+                grp = legacy_list[0] if legacy_list else None
+            grp = grp if grp in groups else None
+        ch.pop("groups", None)  # drop the obsolete multi-group list
+        ch["name"] = str(ch.get("name") or "")
+        ch["role"] = role
+        ch["group"] = grp
+        ch["threshold_db"] = _to_float(ch.get("threshold_db"), -45.0)
     project["channels"] = merged
 
     # Macros (dedupe ids; keep first wins). The macro `group` is a FREE-FORM
@@ -314,8 +381,18 @@ class ConfigStore:
         # Clear any manual pins on startup — a hand override should never
         # survive a restart (the app auto-launches at login).
         if isinstance(globals_raw.get("runtime"), dict):
-            globals_raw["runtime"]["override_transition_id"] = None
-            globals_raw["runtime"]["override_macro_id"] = None
+            rt = globals_raw["runtime"]
+            rt["override_transition_id"] = None
+            rt["override_macro_id"] = None
+            # Backfill dynamic-planning keys on pre-existing configs (director
+            # mode DOES persist across restart, unlike the pins above).
+            rt["director_mode"] = "dynamic" if rt.get("director_mode") == "dynamic" else "rules"
+            dyn = rt.get("dynamic")
+            if not isinstance(dyn, dict):
+                dyn = {}
+            dyn.setdefault("interval_s", 8.0)
+            dyn.setdefault("group_alternate", True)
+            rt["dynamic"] = dyn
 
         # Persist globals stripped of any legacy project keys.
         self._write_globals_file(globals_raw)
@@ -382,9 +459,10 @@ class ConfigStore:
             out.append({
                 "name": name,
                 "channel_count": sum(
-                    1 for c in channels if (c.get("groups") or c.get("group"))
+                    1 for c in channels if (c.get("group") or c.get("role"))
                 ),
                 "group_count": len(data.get("groups") or {}),
+                "role_count": len(data.get("roles") or {}),
                 "rule_count": len(data.get("rules") or []),
             })
         return out

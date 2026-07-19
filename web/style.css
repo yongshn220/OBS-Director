@@ -176,6 +176,30 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   margin-left: 4px;
 }
 
+/* Role pills — the fine identities that drive dynamic-mode shot selection.
+   A visual tier below group pills; hidden entirely when no roles exist. */
+.role-pills {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  margin: -10px 0 16px;
+}
+.role-pills .rp-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin-right: 2px;
+}
+.role-pill {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 9px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted);
+  transition: all 0.15s;
+}
+.role-pill .pill-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: all 0.15s;
+}
+.role-pill.active { border-color: #38d0de; color: var(--text); background: rgba(56,208,222,0.08); }
+.role-pill.active .pill-dot { box-shadow: 0 0 6px currentColor; }
+.role-pill .pill-meta { color: var(--muted); margin-left: 3px; }
+
 /* ── Monitor: VU grid ──────────────────────────────────────── */
 .channels-grid {
   display: grid;
@@ -234,44 +258,21 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   justify-content: center;
 }
 .ch-group-pill { white-space: nowrap; }
+/* Monitor channel-card role tag: brighter than the group pill (it's the fine
+   identity) */
+.ch-role-pill { white-space: nowrap; font-weight: 800; }
 
-/* Channels-table multi-group cell: chips + add dropdown */
-.ch-groups-cell {
+/* Channels-table role/group cell: two stacked selects (group, then role) */
+.ch-rolegroup-cell {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-  min-width: 140px;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 150px;
 }
-.ch-group-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px 4px 2px 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--panel);
-  font-size: 11px;
-  font-weight: 600;
-}
-.ch-group-chip .cgc-name { line-height: 1; }
-.ch-group-chip .cgc-x {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 2px;
-}
-.ch-group-chip .cgc-x:hover { color: var(--red); }
-.ch-group-add {
-  font-size: 11px;
-  padding: 2px 4px;
-  background: transparent;
-  color: var(--muted);
-  border: 1px dashed var(--border-strong);
-  border-radius: 10px;
+.ch-rolegroup-cell select { width: 100%; }
+.ch-rolegroup-cell .ch-role-sel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Macros tab ──────────────────────────────────────────────── */
@@ -286,10 +287,32 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 .macros-table { display: flex; flex-direction: column; gap: 6px; }
 .macro-row {
   display: grid;
-  grid-template-columns: 1.3fr 1.3fr 70px 1fr 56px;
+  grid-template-columns: 1.2fr 1.2fr 60px 0.9fr 1.5fr 56px;
   gap: 8px;
   align-items: center;
 }
+/* Sources: toggle chips (roles + groups) for dynamic planning */
+.macro-sources { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.ms-chip {
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.ms-chip:hover { color: var(--text); border-color: var(--blue); }
+.ms-chip.on { color: #06121a; font-weight: 700; }
+/* Roles = fine (solid pill); groups = coarse (dashed border, prefixed) */
+.ms-chip.ms-role.on { border-color: var(--blue); background: var(--blue); }
+.ms-chip.ms-group { border-style: dashed; }
+.ms-chip.ms-group::before { content: '그룹·'; opacity: 0.55; font-size: 9px; }
+.ms-chip.ms-group.on { border-color: var(--blue); background: var(--blue); border-style: solid; }
+.ms-div { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border-strong); }
+.ms-empty { font-size: 11px; color: var(--muted); font-style: italic; }
 .macro-row select.macro-group {
   padding: 7px 8px;
   background: var(--panel);
@@ -522,8 +545,42 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 .director.idle > .director-strip { opacity: 0.55; }
 .director.pinned { border-color: var(--yellow); }
 .director.shot { border-color: var(--red); }
+.director.dyn { border-color: rgba(56,208,222,0.55); }
+.director.dyn.idle .director-head,
+.director.dyn.idle > .director-strip { opacity: 1; }   /* dynamic-idle is a real state, not "off" */
 .director .dh-rule.pinned { color: var(--yellow); font-weight: 700; }
 .director .dh-rule.shot { color: var(--red); font-weight: 700; }
+.director .dh-rule.dyn { color: #38d0de; font-weight: 700; }
+
+/* Dynamic-mode settings bar (Monitor tab) */
+.dynamic-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  margin: -6px 0 14px;
+  border: 1px solid rgba(56,208,222,0.30);
+  border-radius: 8px;
+  background: rgba(56,208,222,0.06);
+  font-size: 12px;
+}
+.dynamic-settings.hidden { display: none; }
+.dynamic-settings .ds-title { color: #38d0de; font-weight: 700; }
+.dynamic-settings .ds-field,
+.dynamic-settings .ds-check { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.dynamic-settings input[type="number"] {
+  width: 56px;
+  padding: 4px 6px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+.dynamic-settings input[type="checkbox"] { accent-color: #38d0de; }
+.dynamic-settings .ds-hint { color: var(--muted); margin-left: auto; }
 
 /* 수동 고정 override strip */
 .director-override {
@@ -903,43 +960,37 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   font-weight: 600;
   font-size: 14px;
 }
-.group-color-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-}
-
-/* Curated palette: 10 preset swatches. The selected one has a ring drawn
-   via box-shadow (border would shift the swatch and ruin alignment). */
-.color-palette {
-  display: inline-flex;
-  gap: 6px;
-  flex-wrap: nowrap;
-}
-.color-swatch {
+/* A single circular swatch that IS the native color-picker trigger — see
+   renderColorCirclePicker() in app.js. The <input type="color"> inside is
+   made fully invisible but still receives the click, so the visible circle
+   never shows the browser's native rectangular picker chrome. */
+.color-circle-picker {
+  position: relative;
+  display: inline-block;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: none;
-  padding: 0;
   cursor: pointer;
-  outline: none;
-  transition: transform 0.1s, box-shadow 0.15s;
   flex-shrink: 0;
+  transition: transform 0.1s, box-shadow 0.15s;
 }
-.color-swatch:hover { transform: scale(1.18); }
-.color-swatch.selected {
-  box-shadow:
-    0 0 0 2px var(--surface),     /* gap so ring doesn't touch the color */
-    0 0 0 3px var(--text);        /* visible ring */
+.color-circle-picker:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--text);
 }
-
-.group-palette-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+.color-circle-picker input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
 }
+.group-color-dot { width: 16px; height: 16px; }
 .group-card-meta {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
@@ -968,6 +1019,41 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
   justify-content: flex-end;
   margin-top: 8px;
 }
+
+/* Roles subsection inside a group card */
+.group-roles {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.group-roles .gr-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--muted); margin-bottom: 8px;
+}
+.group-roles .gr-list {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;
+}
+.group-roles .gr-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+.gr-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--panel); font-size: 12px; font-weight: 600;
+}
+.gr-chip .gr-dot { width: 14px; height: 14px; }
+.gr-chip .gr-name { line-height: 1; }
+.gr-chip .gr-x {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px;
+}
+.gr-chip .gr-x:hover { color: var(--red); }
+.group-roles .gr-add { display: flex; gap: 6px; align-items: center; }
+.group-roles .gr-add input {
+  flex: 1; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 9px; color: var(--text);
+  font-family: inherit; font-size: 12px; outline: none;
+}
+.group-roles .gr-add input:focus { border-color: var(--blue); }
 
 .add-group {
   display: flex;
@@ -1047,6 +1133,8 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 /* Active states — color-coded by meaning */
 .seg-auto.active   { background: rgba(0,255,136,0.18);  color: var(--green); }
 .seg-manual.active { background: var(--surface3);        color: var(--text); }
+.seg-rules.active   { background: var(--surface3);       color: var(--text); }
+.seg-dynamic.active { background: rgba(56,208,222,0.20); color: #38d0de; }
 .seg-dry.active    { background: rgba(255,215,0,0.18);  color: var(--yellow); }
 .seg-live.active   { background: rgba(255,64,96,0.18);  color: var(--red); }
 

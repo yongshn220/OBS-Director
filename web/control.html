@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0d12">
+  <title>Director 컨트롤러</title>
+  <link rel="stylesheet" href="/static/control.css">
+</head>
+<body>
+  <!-- Sticky top: connection + mode toggles -->
+  <header class="c-top">
+    <div class="c-brand">
+      <span class="c-dot" id="c-dot"></span>
+      <span id="c-status">연결 중…</span>
+    </div>
+    <div class="c-modes">
+      <div class="c-seg" id="seg-auto-grp">
+        <button class="c-segbtn" data-act="auto" data-val="1">AUTO</button>
+        <button class="c-segbtn" data-act="auto" data-val="0">MANUAL</button>
+      </div>
+      <div class="c-seg" id="seg-mode-grp">
+        <button class="c-segbtn" data-act="mode" data-val="rules">룰</button>
+        <button class="c-segbtn" data-act="mode" data-val="dynamic">동적</button>
+      </div>
+      <div class="c-seg c-seg-live" id="seg-live-grp">
+        <button class="c-segbtn" data-act="dry" data-val="1">DRY</button>
+        <button class="c-segbtn" data-act="dry" data-val="0">LIVE</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="c-main">
+    <!-- NOW / NEXT -->
+    <section class="c-now" id="c-now">
+      <div class="c-now-head">
+        <span class="c-now-badge" id="c-now-badge">—</span>
+        <span class="c-now-mode" id="c-now-mode"></span>
+      </div>
+      <div class="c-now-body">
+        <div class="c-now-shot" id="c-now-shot">
+          <div class="c-now-cam" id="c-now-cam">—</div>
+          <div class="c-now-name" id="c-now-name">대기 중</div>
+        </div>
+        <div class="c-now-next">
+          <div class="c-next-label">다음</div>
+          <div class="c-next-strip" id="c-next-strip"></div>
+          <div class="c-count"><span class="c-count-fill" id="c-count-fill"></span><span class="c-count-num" id="c-count-num"></span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Active roles/groups -->
+    <section class="c-activity" id="c-activity"></section>
+
+    <!-- Transition pins -->
+    <section class="c-block">
+      <div class="c-block-label">트랜지션 고정</div>
+      <div class="c-pins" id="c-pins"></div>
+    </section>
+
+    <!-- Shot palette -->
+    <section class="c-block">
+      <div class="c-block-label c-shots-label">
+        <span>샷 — 탭하면 즉시 송출</span>
+        <button class="c-release" id="c-release">해제</button>
+      </div>
+      <div class="c-shots" id="c-shots"></div>
+    </section>
+  </main>
+
+  <script src="/static/control.js"></script>
+</body>
+</html>

@@ -32,6 +32,10 @@
       <button class="seg seg-auto" id="seg-auto">AUTO</button>
       <button class="seg seg-manual" id="seg-manual">MANUAL</button>
     </div>
+    <div class="seg-toggle" title="룰: 룰 매칭으로 트랜지션 선택 · 동적: 활성 그룹에 따라 화면을 자동 구성">
+      <button class="seg seg-rules" id="seg-rules">룰</button>
+      <button class="seg seg-dynamic" id="seg-dynamic">동적</button>
+    </div>
     <div class="seg-toggle" title="DRY: 매칭만 로그에 기록 · LIVE: 실제로 HTTP 요청 전송">
       <button class="seg seg-dry" id="seg-dry">DRY</button>
       <button class="seg seg-live" id="seg-live">LIVE</button>
@@ -63,6 +67,18 @@
       <div class="director-strip director-empty">활성 룰이 없습니다 — 룰이 매칭되면 트랜지션이 여기에 표시됩니다.</div>
     </div>
 
+    <!-- Dynamic-mode settings — visible only when director_mode == "dynamic" -->
+    <div class="dynamic-settings hidden" id="dynamic-settings">
+      <span class="ds-title">⚙ 동적 플래닝</span>
+      <label class="ds-field">회전 간격
+        <input type="number" id="dyn-interval" min="0.5" step="0.5" value="8"> 초
+      </label>
+      <label class="ds-check">
+        <input type="checkbox" id="dyn-group-alt"> 같은 그룹 연속 회피
+      </label>
+      <span class="ds-hint">매크로의 <b>소스</b>(오디오 그룹)가 활성이면 자동으로 덱에 포함됩니다.</span>
+    </div>
+
     <div class="legend">
       <span><span class="dot" style="background:var(--green)"></span> 신호 있음</span>
       <span><span class="dot" style="background:var(--yellow)"></span> 주의</span>
@@ -72,6 +88,7 @@
     </div>
 
     <div class="group-pills" id="group-pills"></div>
+    <div class="role-pills" id="role-pills"></div>
 
     <div class="channels-grid" id="grid"></div>
   </section>
@@ -194,7 +211,7 @@
 
     <div class="add-group">
       <input type="text" id="new-group-name" placeholder="새 그룹 이름 (예: choir)" maxlength="24">
-      <div id="new-group-palette" class="color-palette"></div>
+      <div id="new-group-palette"></div>
       <button class="btn primary" id="add-group-btn">+ 그룹 추가</button>
     </div>
   </section>

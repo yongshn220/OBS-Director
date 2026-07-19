@@ -15,8 +15,15 @@
   },
   "runtime": {
     "auto": true,
-    "dry_run": false,
-    "refire_s": 3.0
+    "dry_run": true,
+    "refire_s": 3.0,
+    "override_transition_id": null,
+    "override_macro_id": null,
+    "director_mode": "rules",
+    "dynamic": {
+      "interval_s": 8.0,
+      "group_alternate": true
+    }
   },
   "current_project": "default"
 }

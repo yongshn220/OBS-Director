@@ -108,6 +108,10 @@ class RuleEngine:
     # Synthetic rule id used when the operator pins a transition by hand
     # (runtime.override_transition_id) instead of letting rules choose.
     OVERRIDE_RULE_ID = "__override__"
+    # Synthetic ids used in "dynamic" director mode, where the deck is built
+    # live from active audio groups instead of a rule picking a transition.
+    DYNAMIC_RULE_ID = "__dynamic__"
+    DYNAMIC_TRANSITION_ID = "__dynamic_trn__"
 
     def __init__(self, config_store):
         self.config_store = config_store
@@ -125,7 +129,8 @@ class RuleEngine:
 
     # ── Public ────────────────────────────────────────────────────
 
-    def tick(self, group_states: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def tick(self, group_states: dict[str, dict[str, Any]],
+             role_states: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         cfg = self.config_store.snapshot()
         runtime = cfg.get("runtime") or {}
         rules: list[dict[str, Any]] = cfg.get("rules") or []
@@ -134,6 +139,7 @@ class RuleEngine:
         refire_s: float = float(runtime.get("refire_s", self.DEFAULT_REFIRE_S))
         override_id = runtime.get("override_transition_id") or None
         override_macro_id = runtime.get("override_macro_id") or None
+        director_mode = "dynamic" if runtime.get("director_mode") == "dynamic" else "rules"
 
         now = time.monotonic()
 
@@ -151,6 +157,7 @@ class RuleEngine:
                 "fired": [],
                 "dry_run": dry_run,
                 "matching": [],
+                "director_mode": director_mode,
                 "reason": "manual",
             }
 
@@ -186,6 +193,7 @@ class RuleEngine:
                     "active_cooldown_remaining": None, "active_macro": override_macro_id,
                     "override_transition_id": override_id, "override_macro_id": override_macro_id,
                     "director": director, "fired": fired, "dry_run": dry_run, "matching": [],
+                    "director_mode": director_mode,
                 }
             # Pinned macro was deleted → fall through.
         self._held_macro_id = None
@@ -216,11 +224,22 @@ class RuleEngine:
                     "fired": fired,
                     "dry_run": dry_run,
                     "matching": [],
+                    "director_mode": director_mode,
                 }
             # Override points to a deleted transition → ignore, run rules.
 
         # Leaving override (pin cleared or gone) → reset so rules re-open cleanly.
         if self.active_rule_id == self.OVERRIDE_RULE_ID:
+            self._release_active()
+            self.active_since = now
+
+        # ── Dynamic mode: build the deck live from active roles/groups ──
+        if director_mode == "dynamic":
+            return self._tick_dynamic(cfg, group_states, role_states, now, dry_run,
+                                      override_id, override_macro_id)
+
+        # Leaving dynamic mode → reset so rules re-open cleanly.
+        if self.active_rule_id == self.DYNAMIC_RULE_ID:
             self._release_active()
             self.active_since = now
 
@@ -338,6 +357,102 @@ class RuleEngine:
             "fired": fired,
             "dry_run": dry_run,
             "matching": queue,
+            "director_mode": director_mode,
+        }
+
+    # ── Dynamic mode: live deck from active audio groups ──────────────
+
+    def _build_dynamic_transition(
+        self, cfg: dict[str, Any], group_states: dict[str, dict[str, Any]],
+        role_states: dict[str, dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Synthesize a transition on the fly: its deck is every macro whose
+        `sources` intersects the currently-active ROLES or GROUPS. A macro's
+        sources may name fine roles (e.g. "Singer Choi") and/or coarse groups
+        (e.g. "singers"); a role source surfaces the shot only when that role's
+        channel is live, a group source whenever any member is live. Feeding
+        this to the same rotation engine reuses camera round-robin, group-
+        alternate, the Director preview, and the smooth glide-on-change — the
+        deck changes under a STABLE id, so a set change never hard-resets."""
+        active_roles = {r for r, st in (role_states or {}).items() if st and st.get("active")}
+        active_groups = {g for g, st in (group_states or {}).items() if st and st.get("active")}
+        active = active_roles | active_groups
+        deck = [
+            m["id"] for m in (cfg.get("macros") or [])
+            if m.get("id") and (set(m.get("sources") or []) & active)
+        ]
+        dyn = (cfg.get("runtime") or {}).get("dynamic") or {}
+        try:
+            interval = float(dyn.get("interval_s", self.DEFAULT_INTERVAL_S))
+        except (TypeError, ValueError):
+            interval = self.DEFAULT_INTERVAL_S
+        transition = {
+            "id": self.DYNAMIC_TRANSITION_ID,
+            "name": "자동 플래닝",
+            "deck": deck,
+            "interval_s": interval,
+            "camera_alternate": True,           # rotating cameras is the point
+            "camera_weights": {},               # equal airtime per camera
+            "group_alternate": bool(dyn.get("group_alternate", True)),
+        }
+        # Label the HUD with the active sources actually driving shots — roles
+        # first (fine), then any active groups, deduped.
+        labels = sorted(active_roles) + [g for g in sorted(active_groups) if g not in active_roles]
+        return transition, labels
+
+    def _tick_dynamic(self, cfg: dict[str, Any], group_states: dict[str, dict[str, Any]],
+                      role_states: dict[str, dict[str, Any]] | None,
+                      now: float, dry_run: bool,
+                      override_id: str | None, override_macro_id: str | None) -> dict[str, Any]:
+        transition, active_sources = self._build_dynamic_transition(cfg, group_states, role_states)
+        deck = transition.get("deck") or []
+        fired: list[dict[str, Any]] = []
+        pseudo = {
+            "id": self.DYNAMIC_RULE_ID, "name": "자동 플래닝",
+            "actions": [{"type": "transition", "transition_id": self.DYNAMIC_TRANSITION_ID}],
+        }
+        # Entering dynamic mode (from rules/override/paused) → drop stale rotation
+        # so we open cleanly on the first active shot.
+        if self.active_rule_id != self.DYNAMIC_RULE_ID:
+            self._rotation = None
+            self.active_since = now
+        self.active_rule_id = self.DYNAMIC_RULE_ID
+
+        if deck:
+            # Same synthetic transition id every tick ⇒ _tick_rotation.need_init
+            # stays False as the deck shifts ⇒ current shot holds until its
+            # interval, then the next draw uses the new active set (glide).
+            self._tick_rotation(pseudo, transition, cfg, now, dry_run, fired)
+            director = self._build_director(cfg, transition, now)
+        else:
+            # Nothing active → HOLD the last on-air shot (fire nothing) and keep
+            # rotation frozen so re-activation cuts promptly rather than waiting a
+            # full interval. The HUD still shows the held shot as current.
+            director = self._empty_director()
+            director["transition_id"] = self.DYNAMIC_TRANSITION_ID
+            director["transition_name"] = "자동 플래닝"
+            rot = self._rotation
+            if rot and rot.get("rule_id") == self.DYNAMIC_RULE_ID:
+                cur = self._macro_index(cfg).get(rot.get("current_macro_id"))
+                if cur is not None:
+                    director["current"] = {
+                        "macro_id": cur["id"], "name": cur.get("name"),
+                        "camera": cur.get("camera"), "group": cur.get("group"),
+                    }
+        director["mode"] = "dynamic"
+        director["active_sources"] = active_sources
+        return {
+            "active_rule_id": self.DYNAMIC_RULE_ID,
+            "active_rule_name": "자동 플래닝",
+            "active_cooldown_remaining": None,
+            "active_macro": (director.get("current") or {}).get("macro_id"),
+            "override_transition_id": override_id,
+            "override_macro_id": override_macro_id,
+            "director": director,
+            "fired": fired,
+            "dry_run": dry_run,
+            "matching": [],
+            "director_mode": "dynamic",
         }
 
     @staticmethod
@@ -554,6 +669,7 @@ class RuleEngine:
         if not transition.get("camera_alternate", True):
             return
         deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
+        deck_set = set(deck)
         cams = self._camera_order(deck, macro_index)
         if not cams:
             return
@@ -580,7 +696,7 @@ class RuleEngine:
         scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
         for c, k in need.items():
             cb = [mid for mid in (scene_bags.get(c) or [])
-                  if mid in macro_index and macro_index[mid].get("camera") == c]
+                  if mid in deck_set and macro_index[mid].get("camera") == c]
             cam_scenes = [mid for mid in deck if macro_index[mid].get("camera") == c]
             if not cam_scenes:
                 cb = []
@@ -615,9 +731,15 @@ class RuleEngine:
         deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
         if not deck:
             return None
+        # deck_set guards committed bags against a SHRUNK deck: in dynamic mode
+        # the deck changes under a stable id, so a previously-committed scene may
+        # be a still-valid macro on the same camera yet no longer in the active
+        # deck. Filtering by membership drops it (and the bag rebuilds from the
+        # live deck). For static transitions the deck never changes ⇒ no-op.
+        deck_set = set(deck)
 
         if not transition.get("camera_alternate", True):
-            bag = [mid for mid in (rot.get("flat_bag") or []) if mid in macro_index]
+            bag = [mid for mid in (rot.get("flat_bag") or []) if mid in deck_set]
             if not bag:
                 bag = list(deck)
                 rng.shuffle(bag)
@@ -640,7 +762,7 @@ class RuleEngine:
 
         # Pop the next scene within that camera (committed per-camera deck).
         bag = [mid for mid in (scene_bags.get(cam) or [])
-               if mid in macro_index and macro_index[mid].get("camera") == cam]
+               if mid in deck_set and macro_index[mid].get("camera") == cam]
         if not bag:
             bag = [mid for mid in deck if macro_index[mid].get("camera") == cam]
             rng.shuffle(bag)

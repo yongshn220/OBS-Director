@@ -27,19 +27,22 @@ const GROUP_COLOR_PALETTE = [
   '#00bd9b', // emerald
 ];
 
-function renderColorPalette(currentColor, onSelect) {
-  const wrap = document.createElement('div');
-  wrap.className = 'color-palette';
-  const cur = (currentColor || '').toLowerCase();
-  for (const c of GROUP_COLOR_PALETTE) {
-    const sw = document.createElement('button');
-    sw.type = 'button';
-    sw.className = 'color-swatch' + (c.toLowerCase() === cur ? ' selected' : '');
-    sw.style.background = c;
-    sw.title = c;
-    sw.addEventListener('click', () => onSelect(c));
-    wrap.appendChild(sw);
-  }
+// A single circular swatch that IS the native color-picker trigger: the
+// visible circle shows the current color, and a fully transparent
+// <input type="color"> sits on top capturing the click, so clicking the
+// circle opens the browser's native color wheel/picker (any color, not just
+// the curated palette). onChange fires once the picker is dismissed.
+function renderColorCirclePicker(currentColor, onChange) {
+  const wrap = document.createElement('span');
+  wrap.className = 'color-circle-picker';
+  wrap.style.background = currentColor || '#888';
+  wrap.title = '클릭해서 색상 변경';
+  const input = document.createElement('input');
+  input.type = 'color';
+  input.value = currentColor || '#888888';
+  input.addEventListener('input', () => { wrap.style.background = input.value; });
+  input.addEventListener('change', () => onChange(input.value));
+  wrap.appendChild(input);
   return wrap;
 }
 
@@ -123,16 +126,23 @@ function buildMonitor() {
 
     const groupTag = document.createElement('div');
     groupTag.className = 'ch-group-tag';
-    const chGroups = ch.groups || (ch.group ? [ch.group] : []);
-    chGroups.forEach((g, i) => {
-      if (i > 0) groupTag.appendChild(document.createTextNode(' '));
-      const pill = document.createElement('span');
-      pill.className = 'ch-group-pill';
-      pill.textContent = g;
-      const color = state.config.groups[g]?.color;
-      if (color) pill.style.color = color;
-      groupTag.appendChild(pill);
-    });
+    if (ch.role) {
+      const rp = document.createElement('span');
+      rp.className = 'ch-role-pill';
+      rp.textContent = ch.role;
+      const rc = state.config.roles?.[ch.role]?.color;
+      if (rc) rp.style.color = rc;
+      groupTag.appendChild(rp);
+    }
+    if (ch.group) {
+      if (ch.role) groupTag.appendChild(document.createTextNode(' '));
+      const gp = document.createElement('span');
+      gp.className = 'ch-group-pill';
+      gp.textContent = ch.group;
+      const color = state.config.groups[ch.group]?.color;
+      if (color) gp.style.color = color;
+      groupTag.appendChild(gp);
+    }
 
     const wrap = document.createElement('div');
     wrap.className = 'vu-wrap';
@@ -204,6 +214,7 @@ function renderMonitorTick(msg) {
   }
 
   renderGroupPills(msg.groups || {});
+  renderRolePills(msg.roles || {});
   renderModePill(msg.status || {});
   renderChannelsLiveDb(msg.levels);
   applyLiveGroupsToCondPills(msg.groups || {});
@@ -385,6 +396,45 @@ function renderGroupPills(groups) {
   });
 }
 
+// Fine role activity — the signal that drives dynamic-mode shot selection.
+// Hidden entirely when no roles are defined so the monitor stays uncluttered.
+function renderRolePills(roles) {
+  const wrap = document.getElementById('role-pills');
+  if (!wrap) return;
+  const names = Object.keys(state.config.roles || {});
+  if (!names.length) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+  wrap.style.display = '';
+  if (wrap.childElementCount !== names.length + 1) {
+    wrap.innerHTML = '<span class="rp-label">역할</span>';
+    names.forEach(name => {
+      const el = document.createElement('div');
+      el.className = 'role-pill';
+      el.dataset.role = name;
+      const dot = document.createElement('span');
+      dot.className = 'pill-dot';
+      const label = document.createElement('span');
+      label.className = 'pill-label';
+      label.textContent = name;
+      const meta = document.createElement('span');
+      meta.className = 'pill-meta';
+      el.append(dot, label, meta);
+      wrap.appendChild(el);
+    });
+  }
+  names.forEach(name => {
+    const el = wrap.querySelector(`[data-role="${CSS.escape(name)}"]`);
+    if (!el) return;
+    const r = roles[name];
+    const active = r?.active;
+    el.classList.toggle('active', !!active);
+    const dot = el.querySelector('.pill-dot');
+    const color = state.config.roles[name]?.color;
+    if (color) dot.style.background = active ? color : '';
+    el.querySelector('.pill-meta').textContent =
+      r ? `· ${r.member_count}ch · ${formatDb(r.peak_db)} dB` : '';
+  });
+}
+
 // ── Channels table ────────────────────────────────────────────────
 function buildChannelsTable() {
   const root = document.getElementById('channels-table');
@@ -406,50 +456,47 @@ function buildChannelsTable() {
     nameInput.value = ch.name || '';
     nameInput.addEventListener('change', () => patchChannel(ch.id, { name: nameInput.value }));
 
-    // Multi-group cell: chip per assigned group (with ×) + an add-dropdown
-    // listing groups not yet assigned. Channels can be in 0..N groups.
-    const groupCell = document.createElement('div');
-    groupCell.className = 'ch-groups-cell';
-    const current = (ch.groups && ch.groups.length)
-      ? [...ch.groups]
-      : (ch.group ? [ch.group] : []);  // legacy fallback
-    current.forEach(g => {
-      const chip = document.createElement('span');
-      chip.className = 'ch-group-chip';
-      const color = state.config.groups[g]?.color;
-      if (color) chip.style.borderColor = color;
-      const label = document.createElement('span');
-      label.className = 'cgc-name';
-      label.textContent = g;
-      if (color) label.style.color = color;
-      const x = document.createElement('button');
-      x.className = 'cgc-x';
-      x.textContent = '×';
-      x.title = '이 그룹에서 제거';
-      x.addEventListener('click', () => {
-        patchChannel(ch.id, { groups: current.filter(g2 => g2 !== g) });
-      });
-      chip.append(label, x);
-      groupCell.appendChild(chip);
-    });
-    const remaining = groupNames.filter(g => !current.includes(g));
-    if (remaining.length) {
-      const add = document.createElement('select');
-      add.className = 'ch-group-add';
-      const ph = document.createElement('option');
-      ph.value = ''; ph.textContent = current.length ? '+ 추가' : '+ 그룹 선택';
-      add.appendChild(ph);
-      remaining.forEach(g => {
-        const o = document.createElement('option');
-        o.value = g; o.textContent = g;
-        add.appendChild(o);
-      });
-      add.addEventListener('change', () => {
-        if (!add.value) return;
-        patchChannel(ch.id, { groups: [...current, add.value] });
-      });
-      groupCell.appendChild(add);
+    // Role/Group cell: pick a GROUP (coarse), then a ROLE (fine, filtered to
+    // that group). Setting a role derives the group on the backend; changing
+    // the group clears the role (it may not belong to the new group).
+    const rgCell = document.createElement('div');
+    rgCell.className = 'ch-rolegroup-cell';
+
+    const groupSel = document.createElement('select');
+    groupSel.className = 'ch-group-sel';
+    groupSel.appendChild(new Option('그룹 없음', ''));
+    groupNames.forEach(g => groupSel.appendChild(new Option(g, g)));
+    groupSel.value = ch.group || '';
+    {
+      const gc = ch.group && state.config.groups[ch.group]?.color;
+      groupSel.style.borderColor = gc || '';
     }
+    groupSel.addEventListener('change', () => {
+      patchChannel(ch.id, { role: null, group: groupSel.value || null });
+    });
+
+    const roleSel = document.createElement('select');
+    roleSel.className = 'ch-role-sel';
+    const rolesInGroup = Object.entries(state.config.roles || {})
+      .filter(([, r]) => r.group === ch.group)
+      .map(([rn]) => rn);
+    roleSel.appendChild(new Option('역할 없음', ''));
+    rolesInGroup.forEach(rn => roleSel.appendChild(new Option(rn, rn)));
+    roleSel.value = ch.role || '';
+    roleSel.disabled = !ch.group;
+    roleSel.title = ch.group
+      ? (rolesInGroup.length ? '이 채널의 역할 (세부 피사체)' : 'Groups 탭에서 이 그룹에 역할을 먼저 만드세요')
+      : '먼저 그룹을 선택하세요';
+    {
+      const rc = ch.role && state.config.roles[ch.role]?.color;
+      roleSel.style.borderColor = rc || '';
+    }
+    roleSel.addEventListener('change', () => {
+      patchChannel(ch.id, { role: roleSel.value || null });
+    });
+
+    rgCell.append(groupSel, roleSel);
+    const groupCell = rgCell;
 
     const thrCell = document.createElement('div');
     thrCell.className = 'threshold-cell';
@@ -514,10 +561,7 @@ function buildGroups() {
   const memberCounts = {};
   Object.keys(groups).forEach(g => memberCounts[g] = 0);
   state.config.channels.forEach(c => {
-    const cgs = c.groups || (c.group ? [c.group] : []);
-    cgs.forEach(g => {
-      if (memberCounts[g] !== undefined) memberCounts[g]++;
-    });
+    if (c.group && memberCounts[c.group] !== undefined) memberCounts[c.group]++;
   });
 
   Object.entries(groups).forEach(([name, g]) => {
@@ -529,11 +573,15 @@ function buildGroups() {
     const title = document.createElement('div');
     title.className = 'group-card-title';
 
-    // Current-color dot — read-only indicator. Choice is made by clicking
-    // a swatch in the palette row below.
-    const dot = document.createElement('span');
-    dot.className = 'group-color-dot';
-    dot.style.background = g.color || '#888';
+    // Color circle — doubles as the swatch AND the picker trigger. Click it
+    // to open the browser's native color wheel and pick any color.
+    const dot = renderColorCirclePicker(g.color, async (newColor) => {
+      await upsertGroup(name, { color: newColor });
+      await loadConfig();
+      buildMonitor();       // group pill colors
+      buildChannelsTable(); // channel group-tag colors
+    });
+    dot.classList.add('group-color-dot');
 
     const titleText = document.createElement('span');
     titleText.textContent = name;
@@ -542,18 +590,6 @@ function buildGroups() {
     meta.className = 'group-card-meta';
     meta.textContent = `${memberCounts[name]} 채널`;
     header.append(title, meta);
-
-    // Color palette — replaces the legacy native <input type="color"> with a
-    // curated 10-swatch row for visual consistency.
-    const paletteRow = document.createElement('div');
-    paletteRow.className = 'group-palette-row';
-    paletteRow.appendChild(renderColorPalette(g.color, async (newColor) => {
-      await upsertGroup(name, { color: newColor });
-      await loadConfig();
-      buildGroups();        // re-render palette selected state
-      buildMonitor();       // group pill colors
-      buildChannelsTable(); // channel group-tag colors
-    }));
 
     const attackRow = makeSliderRow('Attack', 'attack_ms', g.attack_ms ?? 200, 0, 2000, 10);
     const releaseRow = makeSliderRow('Release', 'release_ms', g.release_ms ?? 1000, 0, 5000, 50);
@@ -565,24 +601,123 @@ function buildGroups() {
       upsertGroup(name, { release_ms: parseFloat(releaseRow.input.value) });
     });
 
+    // Roles subsection: the fine subject identities inside this group.
+    const rolesSection = renderGroupRoles(name);
+
     const footer = document.createElement('div');
     footer.className = 'group-card-footer';
     const delBtn = document.createElement('button');
     delBtn.className = 'btn small danger';
     delBtn.textContent = '삭제';
     delBtn.addEventListener('click', async () => {
-      if (!confirm(`"${name}" 그룹을 삭제할까요? 이 그룹에 속한 채널은 그룹 없음 상태가 됩니다.`)) return;
-      await fetch(`/api/groups/${name}`, { method: 'DELETE' });
+      const roleCount = Object.values(state.config.roles || {})
+        .filter(r => r.group === name).length;
+      const warn = roleCount
+        ? `\n이 그룹의 역할 ${roleCount}개도 함께 삭제되고, 해당 채널은 역할 없음이 됩니다.`
+        : '\n이 그룹에 속한 채널은 그룹 없음 상태가 됩니다.';
+      if (!confirm(`"${name}" 그룹을 삭제할까요?${warn}`)) return;
+      await fetch(`/api/groups/${encodeURIComponent(name)}`, { method: 'DELETE' });
       await loadConfig();
       buildGroups();
       buildChannelsTable();
       buildMonitor();
+      buildMacros();
     });
     footer.appendChild(delBtn);
 
-    card.append(header, paletteRow, attackRow.row, releaseRow.row, footer);
+    card.append(header, attackRow.row, releaseRow.row, rolesSection, footer);
     grid.appendChild(card);
   });
+}
+
+// A group card's roles: chips (color + name + ×) plus an add-role input.
+// Roles are the fine subject identities dynamic mode targets; each belongs to
+// exactly this group and inherits its timing.
+function renderGroupRoles(groupName) {
+  const section = document.createElement('div');
+  section.className = 'group-roles';
+  const label = document.createElement('div');
+  label.className = 'gr-label';
+  label.textContent = '역할 (세부 피사체 · 동적 플래닝 대상)';
+  section.appendChild(label);
+
+  const list = document.createElement('div');
+  list.className = 'gr-list';
+  const roles = Object.entries(state.config.roles || {}).filter(([, r]) => r.group === groupName);
+  if (!roles.length) {
+    const empty = document.createElement('span');
+    empty.className = 'gr-empty';
+    empty.textContent = '아직 역할이 없습니다';
+    list.appendChild(empty);
+  } else {
+    roles.forEach(([rn, r]) => {
+      const chip = document.createElement('span');
+      chip.className = 'gr-chip';
+      const dot = renderColorCirclePicker(r.color, async (newColor) => {
+        await upsertRole(rn, { color: newColor });
+        await loadConfig();
+        buildGroups(); buildMonitor(); buildMacros();
+      });
+      dot.classList.add('gr-dot');
+      const nm = document.createElement('span');
+      nm.className = 'gr-name';
+      nm.textContent = rn;
+      const x = document.createElement('button');
+      x.className = 'gr-x';
+      x.textContent = '×';
+      x.title = '역할 삭제';
+      x.addEventListener('click', async () => {
+        if (!confirm(`역할 "${rn}" 삭제? (이 역할을 쓰던 채널은 역할 없음이 됩니다)`)) return;
+        await deleteRole(rn);
+        await loadConfig();
+        buildGroups(); buildChannelsTable(); buildMonitor(); buildMacros();
+      });
+      chip.append(dot, nm, x);
+      list.appendChild(chip);
+    });
+  }
+  section.appendChild(list);
+
+  const add = document.createElement('div');
+  add.className = 'gr-add';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = '새 역할 (예: Singer Choi)';
+  input.maxLength = 30;
+  const btn = document.createElement('button');
+  btn.className = 'btn small';
+  btn.textContent = '+ 역할';
+  const submit = async () => {
+    const rn = input.value.trim();
+    if (!rn) return;
+    if (state.config.roles && state.config.roles[rn]) {
+      alert('같은 이름의 역할이 이미 있습니다.');
+      return;
+    }
+    const gc = state.config.groups[groupName]?.color || '#888888';
+    await upsertRole(rn, { group: groupName, color: gc });
+    input.value = '';
+    await loadConfig();
+    buildGroups(); buildChannelsTable(); buildMacros();
+  };
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  add.append(input, btn);
+  section.appendChild(add);
+  return section;
+}
+
+async function upsertRole(name, body) {
+  const res = await fetch(`/api/roles/${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!res.ok) { alert('역할 저장 실패: ' + (await res.text())); throw new Error('upsertRole'); }
+  return res.json();
+}
+
+async function deleteRole(name) {
+  const res = await fetch(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (!res.ok) { alert('역할 삭제 실패: ' + (await res.text())); throw new Error('deleteRole'); }
 }
 
 function makeSliderRow(label, key, value, min, max, step) {
@@ -630,17 +765,12 @@ function bindGroupAdd() {
   const input = document.getElementById('new-group-name');
   const paletteRoot = document.getElementById('new-group-palette');
 
-  // The chosen color for the next-to-be-created group. We re-render the
-  // palette whenever it changes so the selected swatch gets the ring.
+  // The chosen color for the next-to-be-created group, picked via the native
+  // color wheel behind the circle swatch. Defaults rotate through the curated
+  // palette so successive adds still start out visually distinct.
   let chosenColor = GROUP_COLOR_PALETTE[0];
-  const rerenderPalette = () => {
-    paletteRoot.innerHTML = '';
-    paletteRoot.appendChild(renderColorPalette(chosenColor, (c) => {
-      chosenColor = c;
-      rerenderPalette();
-    }));
-  };
-  rerenderPalette();
+  paletteRoot.innerHTML = '';
+  paletteRoot.appendChild(renderColorCirclePicker(chosenColor, (c) => { chosenColor = c; }));
 
   const submit = async () => {
     const name = input.value.trim();
@@ -655,10 +785,12 @@ function bindGroupAdd() {
       color: chosenColor,
     });
     input.value = '';
-    // Suggest the next palette slot so successive group adds get distinct colors.
+    // Suggest the next palette slot so successive group adds get distinct colors
+    // (falls back to the first slot if the last add used a custom picked color).
     const idx = GROUP_COLOR_PALETTE.indexOf(chosenColor);
     chosenColor = GROUP_COLOR_PALETTE[(idx + 1) % GROUP_COLOR_PALETTE.length];
-    rerenderPalette();
+    paletteRoot.innerHTML = '';
+    paletteRoot.appendChild(renderColorCirclePicker(chosenColor, (c) => { chosenColor = c; }));
     await loadConfig();
     buildGroups();
     buildChannelsTable();
@@ -729,6 +861,21 @@ function bindRuntimeToggles() {
     if (!confirm('LIVE 모드로 전환하면 실제로 OBS·PTZ에 명령을 보냅니다. 계속할까요?')) return;
     patchRuntime({ dry_run: false });
   });
+  // RULES / DYNAMIC — how the director decides what to show
+  document.getElementById('seg-rules').addEventListener('click', () => {
+    if (state.config.runtime?.director_mode !== 'rules') patchRuntime({ director_mode: 'rules' });
+  });
+  document.getElementById('seg-dynamic').addEventListener('click', () => {
+    if (state.config.runtime?.director_mode !== 'dynamic') patchRuntime({ director_mode: 'dynamic' });
+  });
+  // Dynamic-planning knobs
+  const di = document.getElementById('dyn-interval');
+  if (di) di.addEventListener('change', () => {
+    const v = parseFloat(di.value);
+    if (!isNaN(v)) patchRuntime({ dynamic_interval_s: Math.max(0.5, v) });
+  });
+  const dg = document.getElementById('dyn-group-alt');
+  if (dg) dg.addEventListener('change', () => patchRuntime({ dynamic_group_alternate: dg.checked }));
 }
 
 async function patchRuntime(body) {
@@ -752,6 +899,17 @@ function renderRuntimeToggles() {
   document.getElementById('seg-manual').classList.toggle('active', rt.auto === false);
   document.getElementById('seg-dry').classList.toggle('active', rt.dry_run === true);
   document.getElementById('seg-live').classList.toggle('active', rt.dry_run === false);
+  // Director mode + dynamic settings visibility
+  const dyn = rt.director_mode === 'dynamic';
+  document.getElementById('seg-rules')?.classList.toggle('active', !dyn);
+  document.getElementById('seg-dynamic')?.classList.toggle('active', dyn);
+  const ds = document.getElementById('dynamic-settings');
+  if (ds) ds.classList.toggle('hidden', !dyn);
+  const dcfg = rt.dynamic || {};
+  const di = document.getElementById('dyn-interval');
+  if (di && document.activeElement !== di) di.value = (dcfg.interval_s != null ? dcfg.interval_s : 8);
+  const dg = document.getElementById('dyn-group-alt');
+  if (dg) dg.checked = dcfg.group_alternate !== false;
 }
 
 // ── Engine state (active card highlight) ──────────────────────────
@@ -837,21 +995,26 @@ function renderDirector(engine) {
   const d = engine.director;
   const pinTrans = engine.override_transition_id || null;   // pinned transition
   const heldShot = engine.override_macro_id || null;        // held single shot
+  const dynMode = engine.director_mode === 'dynamic';       // live auto-planning
   const active = !!(d && d.transition_id && d.current);
   if (active) {
     lastDirector = {
       transition_name: d.transition_name, current: d.current,
       upcoming: d.upcoming || [], rule_name: engine.active_rule_name || '—',
+      active_sources: d.active_sources || [],
     };
   }
   root.classList.toggle('idle', !active);
   root.classList.toggle('pinned', !!pinTrans);
   root.classList.toggle('shot', !!heldShot);
+  root.classList.toggle('dyn', dynMode && !pinTrans && !heldShot);
 
   const shown = active ? {
     transition_name: d.transition_name, current: d.current,
     upcoming: d.upcoming || [], rule_name: engine.active_rule_name || '—',
+    active_sources: d.active_sources || [],
   } : lastDirector;
+  const dynSources = (shown && shown.active_sources) || (d && d.active_sources) || [];
 
   const transitions = state.config.transitions || [];
   const macros = state.config.macros || [];
@@ -867,11 +1030,15 @@ function renderDirector(engine) {
   if (!shown || !shown.current) {
     const ruleHtml = pinTrans
       ? '<span class="dh-rule pinned">🔒 수동 고정</span>'
-      : '<span class="dh-rule idle">○ 대기 중</span>';
+      : (dynMode ? '<span class="dh-rule dyn">🟢 자동 플래닝 · 대기</span>'
+                 : '<span class="dh-rule idle">○ 대기 중</span>');
+    const emptyText = dynMode
+      ? '활성 그룹이 없습니다 — 소리가 들어오면 매크로 <b>소스</b>에 따라 자동으로 화면이 구성됩니다.'
+      : '활성 룰이 없습니다 — 아래에서 트랜지션·샷을 수동 선택하거나, 룰이 매칭되면 표시됩니다.';
     headBody =
       `<div class="director-head"><div class="dh-left">`
       + `<span class="dh-label">DIRECTOR</span>${ruleHtml}</div></div>`
-      + `<div class="director-strip director-empty">활성 룰이 없습니다 — 아래에서 트랜지션·샷을 수동 선택하거나, 룰이 매칭되면 표시됩니다.</div>`;
+      + `<div class="director-strip director-empty">${emptyText}</div>`;
   } else {
     let ruleHtml, transText, transIcon, nextLabel, nowBadge;
     if (heldShot) {
@@ -881,11 +1048,22 @@ function renderDirector(engine) {
       ruleHtml = '<span class="dh-rule pinned">🔒 수동 고정</span>';
       transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '고정 · 다음'; nowBadge = '고정';
     } else if (active) {
-      ruleHtml = `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`;
-      transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '다음 컷'; nowBadge = 'ON AIR';
+      if (dynMode) {
+        const hold = !dynSources.length;
+        ruleHtml = '<span class="dh-rule dyn">🟢 자동 플래닝</span>';
+        transText = hold ? '대기 (활성 소스 없음)' : dynSources.join(' + ');
+        transIcon = hold ? '' : '🎧 '; nextLabel = hold ? '홀드' : '다음 컷';
+        nowBadge = hold ? '홀드' : 'ON AIR';
+      } else {
+        ruleHtml = `<span class="dh-rule">● ${escapeHtml(shown.rule_name)}</span>`;
+        transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '다음 컷'; nowBadge = 'ON AIR';
+      }
     } else {
-      ruleHtml = '<span class="dh-rule idle">○ 대기 중</span>';
-      transText = shown.transition_name || '—'; transIcon = '🔄 '; nextLabel = '대기'; nowBadge = '마지막';
+      ruleHtml = dynMode
+        ? '<span class="dh-rule dyn">🟢 자동 · 대기</span>'
+        : '<span class="dh-rule idle">○ 대기 중</span>';
+      transText = dynMode ? (dynSources.length ? dynSources.join(' + ') : '대기') : (shown.transition_name || '—');
+      transIcon = dynMode ? '🎧 ' : '🔄 '; nextLabel = '대기'; nowBadge = '마지막';
     }
     headBody = `
       <div class="director-head">
@@ -915,6 +1093,7 @@ function renderDirector(engine) {
     : '__empty__';
   const sig = (heldShot ? 'S' : (active ? 'A' : (pinTrans ? 'P' : 'I'))) + ':' + shots
     + '|O:' + (pinTrans || '') + '|M:' + (heldShot || '')
+    + '|D:' + (dynMode ? '1' : '0') + '|G:' + (dynMode ? dynSources.join(',') : '')
     + '|T:' + transitions.map(t => t.id).join(',')
     + '|X:' + macros.map(m => m.id).join(',');
   if (root.dataset.sig !== sig) {
@@ -1450,13 +1629,14 @@ function buildMacros() {
   head.className = 'macro-row macro-head';
   head.innerHTML =
     '<span>샷 이름</span><span>토큰 (ASS로 보낼 payload)</span><span>카메라</span>'
-    + '<span>그룹 (피사체)</span><span></span>';
+    + '<span>그룹 (피사체)</span><span>소스 (동적 · 오디오 그룹)</span><span></span>';
   root.appendChild(head);
 
   // Free-form group suggestions: groups already used on macros + channel
   // group names (as a convenience), but the field accepts any text.
   const sugg = new Set();
   (state.config.macros || []).forEach(m => { if (m.group) sugg.add(m.group); });
+  Object.keys(state.config.roles || {}).forEach(r => sugg.add(r));
   Object.keys(state.config.groups || {}).forEach(g => sugg.add(g));
   let dl = document.getElementById('macro-group-suggest');
   if (!dl) { dl = document.createElement('datalist'); dl.id = 'macro-group-suggest'; document.body.appendChild(dl); }
@@ -1491,6 +1671,49 @@ function renderMacroRow(m) {
   grp.setAttribute('list', 'macro-group-suggest');
   grp.addEventListener('change', () => updateMacro(m.id, { group: grp.value.trim() || null }));
 
+  // Sources: which ROLES (fine subject) or GROUPS (coarse) surface this shot in
+  // dynamic mode. A role source → shows only when that role's channel is live;
+  // a group source → whenever any member is live. Empty = never auto-planned.
+  const sources = document.createElement('div');
+  sources.className = 'macro-sources';
+  const cur = new Set(m.sources || []);
+  const roleEntries = Object.entries(state.config.roles || {}); // [name, {group,color}]
+  const groupNames = Object.keys(state.config.groups || {});
+
+  const addChip = (key, color, kind) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'ms-chip ms-' + kind + (cur.has(key) ? ' on' : '');
+    chip.textContent = key;
+    if (cur.has(key) && color) { chip.style.background = color; chip.style.borderColor = color; }
+    chip.addEventListener('click', () => {
+      const next = new Set(m.sources || []);
+      const on = !next.has(key);
+      on ? next.add(key) : next.delete(key);
+      m.sources = [...next];               // optimistic local update
+      updateMacro(m.id, { sources: m.sources });
+      chip.classList.toggle('on', on);
+      chip.style.background = on && color ? color : '';
+      chip.style.borderColor = on && color ? color : '';
+    });
+    return chip;
+  };
+
+  if (!roleEntries.length && !groupNames.length) {
+    const hint = document.createElement('span');
+    hint.className = 'ms-empty';
+    hint.textContent = 'Groups 탭에서 그룹·역할 먼저';
+    sources.appendChild(hint);
+  } else {
+    roleEntries.forEach(([rn, r]) => sources.appendChild(addChip(rn, r.color, 'role')));
+    if (roleEntries.length && groupNames.length) {
+      const div = document.createElement('span');
+      div.className = 'ms-div';
+      sources.appendChild(div);
+    }
+    groupNames.forEach(g => sources.appendChild(addChip(g, (state.config.groups[g] || {}).color, 'group')));
+  }
+
   const del = document.createElement('button');
   del.className = 'btn small danger';
   del.textContent = '삭제';
@@ -1499,7 +1722,7 @@ function renderMacroRow(m) {
     await deleteMacro(m.id);
   });
 
-  row.append(name, token, cam, grp, del);
+  row.append(name, token, cam, grp, sources, del);
   return row;
 }
 

@@ -298,6 +298,8 @@
       "color": "#9b5cff"
     }
   },
+  "macros": [],
+  "transitions": [],
   "rules": [
     {
       "id": "rule_b6f02d3d",

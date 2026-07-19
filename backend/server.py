@@ -59,8 +59,11 @@ async def _broadcast_loop():
     while True:
         if clients:
             levels = audio.get_levels()
-            groups = evaluator.evaluate(levels)
-            engine_out = rule_engine.tick(groups)
+            states = evaluator.evaluate(levels)
+            groups = states["groups"]
+            roles = states["roles"]
+            engine_out = rule_engine.tick(groups, roles)
+            rt = config_store.snapshot().get("runtime") or {}
             payload = json.dumps({
                 "type": "tick",
                 "levels": [round(v, 6) for v in levels],
@@ -69,6 +72,14 @@ async def _broadcast_loop():
                     for v in levels
                 ],
                 "groups": groups,
+                "roles": roles,
+                # Live runtime toggles so any client (esp. the touch controller)
+                # reflects state changed from another device without polling.
+                "runtime": {
+                    "auto": bool(rt.get("auto", True)),
+                    "dry_run": bool(rt.get("dry_run", True)),
+                    "director_mode": "dynamic" if rt.get("director_mode") == "dynamic" else "rules",
+                },
                 "status": audio.status,
                 "engine": engine_out,
                 "recent_log": rule_engine.recent_log(20),
@@ -169,34 +180,42 @@ def activate_project(name: str):
 
 class ChannelPatch(BaseModel):
     name: str | None = None
-    # None  → no change to group membership
-    # []    → clear all groups
-    # [...] → replace with exactly this set (deduped, validated)
-    groups: list[str] | None = None
+    # role/group use model_fields_set so an explicit null clears them; absence
+    # leaves them unchanged. Setting a role derives the channel's group from
+    # that role; setting group alone (role null) assigns a group directly.
+    role: str | None = None
+    group: str | None = None
     threshold_db: float | None = None
 
 
 @app.patch("/api/channels/{channel_id}")
 def patch_channel(channel_id: int, patch: ChannelPatch):
     def mutate(data):
+        roles = data.get("roles") or {}
+        groups = data.get("groups") or {}
         for ch in data["channels"]:
-            if ch["id"] == channel_id:
-                if patch.name is not None:
-                    ch["name"] = patch.name
-                if patch.threshold_db is not None:
-                    ch["threshold_db"] = float(patch.threshold_db)
-                if patch.groups is not None:
-                    seen = set()
-                    cleaned: list[str] = []
-                    for g in patch.groups:
-                        if not g or g in seen:
-                            continue
-                        if g not in data["groups"]:
-                            raise HTTPException(400, f"unknown group: {g}")
-                        seen.add(g)
-                        cleaned.append(g)
-                    ch["groups"] = cleaned
-                return data
+            if ch["id"] != channel_id:
+                continue
+            if patch.name is not None:
+                ch["name"] = patch.name
+            if patch.threshold_db is not None:
+                ch["threshold_db"] = float(patch.threshold_db)
+            # Role sets the channel's group (hierarchical): a non-null role
+            # derives group from that role, overriding any group in the patch.
+            if "role" in patch.model_fields_set:
+                r = patch.role or None
+                if r is not None and r not in roles:
+                    raise HTTPException(400, f"unknown role: {r}")
+                ch["role"] = r
+                if r is not None:
+                    ch["group"] = roles[r].get("group")
+            # Group may be set directly only when the channel ends up role-less.
+            if "group" in patch.model_fields_set and ch.get("role") is None:
+                g = patch.group or None
+                if g is not None and g not in groups:
+                    raise HTTPException(400, f"unknown group: {g}")
+                ch["group"] = g
+            return data
         raise HTTPException(404, f"channel {channel_id} not found")
     return config_store.update(mutate)
 
@@ -225,16 +244,71 @@ def upsert_group(name: str, body: GroupBody):
 @app.delete("/api/groups/{name}")
 def delete_group(name: str):
     def mutate(data):
-        if name not in data["groups"]:
+        if name not in data.get("groups", {}):
             raise HTTPException(404, f"group {name} not found")
         del data["groups"][name]
-        # Detach channels from this group (remove name from their groups list)
+        # Cascade: delete roles that belonged to this group, and detach any
+        # channel that held one of those roles or sat directly in the group.
+        roles = data.get("roles") or {}
+        removed_roles = {r for r, m in roles.items() if (m or {}).get("group") == name}
+        for r in removed_roles:
+            del roles[r]
+        data["roles"] = roles
         for ch in data["channels"]:
-            gs = ch.get("groups") or []
-            if name in gs:
-                ch["groups"] = [g for g in gs if g != name]
+            if ch.get("role") in removed_roles:
+                ch["role"] = None
+            if ch.get("group") == name:
+                ch["group"] = None
         return data
     return config_store.update(mutate)
+
+
+# ── REST: roles (fine subject identities under a group) ──────────────
+# A role belongs to one group and inherits its timing: { group, color }.
+# Channels pick a role; the role's group becomes the channel's group.
+
+class RoleBody(BaseModel):
+    group: str | None = None
+    color: str | None = None
+
+
+@app.put("/api/roles/{name}")
+def upsert_role(name: str, body: RoleBody):
+    def mutate(data):
+        roles = data.setdefault("roles", {})
+        existing = roles.get(name, {"group": None, "color": "#888888"})
+        if "group" in body.model_fields_set:
+            g = body.group or None
+            if g is not None and g not in (data.get("groups") or {}):
+                raise HTTPException(400, f"unknown group: {g}")
+            existing["group"] = g
+            # Re-derive the group for every channel currently holding this role.
+            for ch in data.get("channels", []):
+                if ch.get("role") == name:
+                    ch["group"] = g
+        if body.color is not None:
+            existing["color"] = body.color
+        roles[name] = existing
+        return data
+    return config_store.update(mutate)["roles"]
+
+
+@app.delete("/api/roles/{name}")
+def delete_role(name: str):
+    def mutate(data):
+        roles = data.get("roles") or {}
+        if name not in roles:
+            raise HTTPException(404, f"role {name} not found")
+        del roles[name]
+        data["roles"] = roles
+        # Detach channels holding this role. Their stored group is already the
+        # role's (now former) group, so keep it — they stay in the group,
+        # just without a specific role.
+        for ch in data["channels"]:
+            if ch.get("role") == name:
+                ch["role"] = None
+        return data
+    return config_store.update(mutate)["roles"]
 
 
 # ── REST: macros ─────────────────────────────────────────────────────
@@ -247,6 +321,8 @@ class MacroBody(BaseModel):
     token: str | None = None
     camera: str | int | None = None
     group: str | None = None
+    # Audio groups whose live activity surfaces this shot in dynamic mode.
+    sources: list[str] | None = None
 
 
 @app.get("/api/macros")
@@ -262,6 +338,7 @@ def create_macro(body: MacroBody):
         "token": body.token or "",
         "camera": body.camera,
         "group": body.group,
+        "sources": body.sources or [],
     }
     def mutate(data):
         data.setdefault("macros", []).append(macro)
@@ -283,6 +360,8 @@ def update_macro(macro_id: str, body: MacroBody):
                     m["camera"] = body.camera
                 if body.group is not None or "group" in body.model_fields_set:
                     m["group"] = body.group
+                if body.sources is not None or "sources" in body.model_fields_set:
+                    m["sources"] = body.sources or []
                 return data
         raise HTTPException(404, f"macro {macro_id} not found")
     return config_store.update(mutate)
@@ -466,6 +545,11 @@ def reorder_rules(body: ReorderBody):
 class RuntimeBody(BaseModel):
     auto: bool | None = None
     dry_run: bool | None = None
+    # "rules" | "dynamic" — how the director chooses what to show.
+    director_mode: str | None = None
+    # Dynamic-mode knobs (rotation interval + same-subject anti-repeat).
+    dynamic_interval_s: float | None = None
+    dynamic_group_alternate: bool | None = None
 
 
 @app.patch("/api/runtime")
@@ -476,6 +560,13 @@ def patch_runtime(body: RuntimeBody):
             rt["auto"] = bool(body.auto)
         if body.dry_run is not None:
             rt["dry_run"] = bool(body.dry_run)
+        if body.director_mode is not None:
+            rt["director_mode"] = "dynamic" if body.director_mode == "dynamic" else "rules"
+        dyn = rt.setdefault("dynamic", {"interval_s": 8.0, "group_alternate": True})
+        if body.dynamic_interval_s is not None:
+            dyn["interval_s"] = max(0.5, float(body.dynamic_interval_s))
+        if body.dynamic_group_alternate is not None:
+            dyn["group_alternate"] = bool(body.dynamic_group_alternate)
         return data
     return config_store.update(mutate)["runtime"]
 
@@ -563,6 +654,13 @@ def restart_audio():
 @app.get("/")
 def index():
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/control")
+def control():
+    """Touch controller for phone/iPad — a stripped live-control surface
+    (mode toggles + NOW/NEXT + manual shot/transition) over the same API."""
+    return FileResponse(WEB_DIR / "control.html")
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
