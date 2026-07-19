@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a9bff"/>
+      <stop offset="1" stop-color="#2f6fe0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <g fill="#ffffff" opacity="0.16">
+    <rect x="250" y="702" width="44" height="96"  rx="22"/>
+    <rect x="330" y="655" width="44" height="190" rx="22"/>
+    <rect x="410" y="612" width="44" height="276" rx="22"/>
+    <rect x="490" y="668" width="44" height="164" rx="22"/>
+    <rect x="570" y="636" width="44" height="228" rx="22"/>
+    <rect x="650" y="672" width="44" height="156" rx="22"/>
+    <rect x="730" y="706" width="44" height="88"  rx="22"/>
+  </g>
+  <text x="512" y="500" text-anchor="middle" dominant-baseline="middle"
+        font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="800"
+        font-size="360" letter-spacing="-8" fill="#ffffff">X32</text>
+</svg>

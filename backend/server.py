@@ -663,4 +663,24 @@ def control():
     return FileResponse(WEB_DIR / "control.html")
 
 
+# ── PWA: service worker (root scope) + manifests ─────────────────────
+# The service worker MUST be served from the root so its scope covers both
+# "/" and "/control". Manifests are served with the correct content type so
+# Chrome/Edge accept them for install.
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(WEB_DIR / "sw.js", media_type="application/javascript")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(WEB_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/manifest-control.webmanifest")
+def manifest_control():
+    return FileResponse(WEB_DIR / "manifest-control.webmanifest", media_type="application/manifest+json")
+
+
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

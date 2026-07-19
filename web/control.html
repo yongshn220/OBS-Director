@@ -5,9 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="컨트롤러">
   <meta name="theme-color" content="#0a0d12">
   <title>Director 컨트롤러</title>
+  <link rel="manifest" href="/manifest-control.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+  <link rel="icon" type="image/png" href="/static/icons/icon-192.png">
   <link rel="stylesheet" href="/static/control.css">
+  <script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));}</script>
 </head>
 <body>
   <!-- Sticky top: connection + mode toggles -->
