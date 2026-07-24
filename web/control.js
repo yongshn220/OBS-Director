@@ -17,14 +17,16 @@ const camLabel = (c) => (c === null || c === undefined || c === '') ? '—' : `C
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // ── API actions ───────────────────────────────────────────────────
-async function post(path, body) {
+async function send(method, path, body) {
   try {
-    await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   } catch (e) { /* next tick reflects real state */ }
 }
-const setOverride = (tid) => post('/api/override', { transition_id: tid });
-const setShot = (mid) => post('/api/override/shot', { macro_id: mid });
-const patchRuntime = (b) => post('/api/runtime', b);
+const setOverride = (tid) => send('POST', '/api/override', { transition_id: tid });
+const setShot = (mid) => send('POST', '/api/override/shot', { macro_id: mid });
+// NOTE: /api/runtime is PATCH-only — POST returns 405 (this was the "LIVE
+// button does nothing" bug). Overrides use POST; runtime uses PATCH.
+const patchRuntime = (b) => send('PATCH', '/api/runtime', b);
 
 // ── Config + static build (pins, shot palette) ────────────────────
 async function loadConfig() {
