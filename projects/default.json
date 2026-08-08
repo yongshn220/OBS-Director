@@ -39,8 +39,8 @@
       "id": 6,
       "name": "SInger #4 (John Cho)",
       "threshold_db": -63.0,
-      "role": "Singer #4",
-      "group": "singers"
+      "role": null,
+      "group": "Leader"
     },
     {
       "id": 7,

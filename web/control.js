@@ -91,6 +91,13 @@ function buildStatic() {
 
 // ── Live tick render ──────────────────────────────────────────────
 function onTick(msg) {
+  // Audio-loss alarm — the director is running blind if the X32 drops.
+  const alarm = document.getElementById('c-audio-alarm');
+  if (alarm) {
+    const err = msg.status && msg.status.mode === 'error';
+    alarm.classList.toggle('hidden', !err);
+    if (err) alarm.textContent = '⚠ 오디오 없음 — ' + ((msg.status && msg.status.error) || 'X32 신호 없음');
+  }
   const rt = msg.runtime || {};
   const eng = msg.engine || {};
   const d = eng.director || {};

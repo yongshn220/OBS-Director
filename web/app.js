@@ -216,6 +216,7 @@ function renderMonitorTick(msg) {
   renderGroupPills(msg.groups || {});
   renderRolePills(msg.roles || {});
   renderModePill(msg.status || {});
+  renderAudioAlarm(msg.status || {});
   renderChannelsLiveDb(msg.levels);
   applyLiveGroupsToCondPills(msg.groups || {});
 }
@@ -350,6 +351,20 @@ function renderChannelsLiveDb(levels) {
     const over = isFinite(db) && db >= thr;
     refs.wrap.classList.toggle('over', over && !isClipping);
     refs.wrap.classList.toggle('clipping', isClipping);
+  }
+}
+
+// Loud, always-visible alarm when the real audio device drops. status.mode
+// becomes "error" (levels forced to zero by the backend watchdog) — the
+// operator must know the director is running blind, not that everyone is quiet.
+function renderAudioAlarm(status) {
+  const el = document.getElementById('audio-alarm');
+  if (!el) return;
+  const isError = status && status.mode === 'error';
+  el.classList.toggle('hidden', !isError);
+  if (isError) {
+    el.textContent = '⚠ 오디오 입력 없음 — ' + (status.error || 'X32 신호가 잡히지 않습니다')
+      + ' · 자동 재연결 시도 중…';
   }
 }
 

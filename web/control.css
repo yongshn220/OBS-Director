@@ -57,6 +57,15 @@ button { font-family: inherit; cursor: pointer; }
 [data-act="dry"][data-val="1"].on { background: var(--yellow); }
 [data-act="dry"][data-val="0"].on { background: var(--red); color: #fff; }
 
+/* Audio-loss alarm bar */
+.c-audio-alarm {
+  background: var(--red); color: #fff; font-weight: 800; font-size: 14px;
+  text-align: center; padding: 12px 14px;
+  animation: c-alarm-pulse 1s ease-in-out infinite;
+}
+.c-audio-alarm.hidden { display: none; }
+@keyframes c-alarm-pulse { 0%,100% { background: #c9243d; } 50% { background: #ff4060; } }
+
 /* ── Main ────────────────────────────────────────────── */
 .c-main { padding: 12px; display: flex; flex-direction: column; gap: 12px; max-width: 900px; margin: 0 auto; }
 

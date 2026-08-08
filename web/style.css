@@ -117,8 +117,25 @@ h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
 }
 .mode-pill.mode-live  { background: rgba(0,255,136,0.15); color: var(--green); }
 .mode-pill.mode-demo  { background: rgba(255,215,0,0.15); color: var(--yellow); }
-.mode-pill.mode-error { background: rgba(255,64,96,0.15);  color: var(--red); }
+.mode-pill.mode-error { background: var(--red); color: #fff; animation: alarm-pulse 1s ease-in-out infinite; }
 .mode-pill.mode-idle  { background: var(--surface2); color: var(--muted); }
+
+/* Audio-loss alarm banner (shown when status.mode === "error") */
+.audio-alarm {
+  background: var(--red);
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  text-align: center;
+  padding: 12px 16px;
+  letter-spacing: 0.3px;
+  animation: alarm-pulse 1s ease-in-out infinite;
+}
+.audio-alarm.hidden { display: none; }
+@keyframes alarm-pulse {
+  0%, 100% { background: #c9243d; }
+  50%      { background: #ff4060; }
+}
 
 /* ── Panels ────────────────────────────────────────────────── */
 .panel { animation: fadein 0.2s ease-out; }

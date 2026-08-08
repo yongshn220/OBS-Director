@@ -28,6 +28,7 @@ clients: set[WebSocket] = set()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     audio.start()
+    audio.start_watchdog()   # detect a dead/wedged device and auto-recover + alarm
     task = asyncio.create_task(_broadcast_loop())
     try:
         yield
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        audio.stop_watchdog()
         audio.stop()
 
 
