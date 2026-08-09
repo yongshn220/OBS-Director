@@ -158,11 +158,11 @@ button, input, select { font-family: inherit; }
 .also { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--mut); }
 
 /* ── LIVE: CHANNELS VU grid ────────────────────────────── */
-.chan-card { grid-column: 1 / span 2; min-height: 300px; }
+.chan-card { grid-column: 1 / span 2; min-height: 600px; }
 .vu-grid { flex: 1; display: grid; grid-template-columns: repeat(16, minmax(0,1fr)); grid-auto-rows: 1fr; gap: 6px; }
 .vu-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 0; }
 .vu-cell.idle { opacity: .42; }
-.vu-track { position: relative; width: 100%; flex: 1; min-height: 64px; border-radius: 4px; background: var(--inset); border: 1px solid #20252d; overflow: hidden; }
+.vu-track { position: relative; width: 100%; flex: 1; min-height: 130px; border-radius: 4px; background: var(--inset); border: 1px solid #20252d; overflow: hidden; }
 .vu-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: #2b313a; transition: height .08s linear; }
 .vu-thr { position: absolute; left: 0; right: 0; height: 1px; background: var(--tx); opacity: .45; }
 .vu-info { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; padding: 6px 3px 5px; pointer-events: none; }
@@ -172,7 +172,7 @@ button, input, select { font-family: inherit; }
 .vu-db { font-family: var(--mono); font-size: 9px; color: var(--mut3); }
 
 /* ── LIVE: LISTENING ───────────────────────────────────── */
-.listen-card { min-height: 300px; }
+.listen-card { min-height: 600px; }
 .gbar { display: flex; flex-direction: column; gap: 5px; }
 .gbar-top { display: flex; align-items: center; gap: 7px; }
 .gbar-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--bd-strong); }
