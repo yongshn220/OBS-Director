@@ -247,7 +247,10 @@ class RuleEngine:
             [r for r in rules if r.get("enabled", True)],
             key=lambda r: (-int(r.get("priority", 0)),),
         )
-        matching = [r for r in ordered if self._match(r, group_states)]
+        # A rule condition may name a TEAM (group) or a finer ROLE. Match
+        # against both, with team winning any name collision (back-compat).
+        match_states = {**(role_states or {}), **group_states}
+        matching = [r for r in ordered if self._match(r, match_states)]
         candidate = matching[0] if matching else None
         fired: list[dict[str, Any]] = []
 

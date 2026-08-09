@@ -6,228 +6,91 @@
 <title>X32 Auto-Director</title>
 <!-- PWA -->
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#0a0d12">
+<meta name="theme-color" content="#0c0e11">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Director">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
 <link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+<!-- Fonts (graceful fallback to system when offline) -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));}</script>
 </head>
 <body>
 
-<header>
-  <div class="logo">
-    <div class="logo-icon">X32</div>
-    <div>
-      <h1>Auto-Director</h1>
-      <div class="subtitle">Behringer X32 · HTTP</div>
-    </div>
-  </div>
+<div class="app">
+  <div class="accent-rail" id="accent-rail"></div>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="monitor">Monitor</button>
-    <button class="tab" data-tab="channels">Channels</button>
-    <button class="tab" data-tab="groups">Groups</button>
-    <button class="tab" data-tab="macros">Macros</button>
-    <button class="tab" data-tab="transitions">Transitions</button>
-    <button class="tab" data-tab="rules">Rules</button>
-    <button class="tab" data-tab="connections">Connections</button>
-  </nav>
+  <header class="hdr">
+    <div class="hdr-brand">
+      <div class="hdr-logo">X32</div>
+      <div class="hdr-title">Auto-Director</div>
+    </div>
 
-  <div class="status-bar">
-    <div class="seg-toggle" title="AUTO: 룰 엔진이 자동으로 씬 전환 · MANUAL: 엔진 일시정지">
-      <button class="seg seg-auto" id="seg-auto">AUTO</button>
-      <button class="seg seg-manual" id="seg-manual">MANUAL</button>
+    <div class="seg big">
+      <button class="segbtn" id="tg-live" data-screen="live">LIVE</button>
+      <button class="segbtn" id="tg-setup" data-screen="setup">SETUP</button>
     </div>
-    <div class="seg-toggle" title="룰: 룰 매칭으로 트랜지션 선택 · 동적: 활성 그룹에 따라 화면을 자동 구성">
-      <button class="seg seg-rules" id="seg-rules">룰</button>
-      <button class="seg seg-dynamic" id="seg-dynamic">동적</button>
+
+    <div class="hdr-sep"></div>
+
+    <div class="hdr-cluster">
+      <span class="lbl-sm">ENGINE</span>
+      <div class="seg">
+        <button class="segbtn" id="tg-auto">AUTO</button>
+        <button class="segbtn" id="tg-manual">MANUAL</button>
+      </div>
     </div>
-    <div class="seg-toggle" title="DRY: 매칭만 로그에 기록 · LIVE: 실제로 HTTP 요청 전송">
-      <button class="seg seg-dry" id="seg-dry">DRY</button>
-      <button class="seg seg-live" id="seg-live">LIVE</button>
+
+    <div class="hdr-cluster">
+      <span class="lbl-sm">PLANNER</span>
+      <div class="seg">
+        <button class="segbtn" id="tg-rules">RULES</button>
+        <button class="segbtn" id="tg-dynamic">DYNAMIC</button>
+      </div>
     </div>
-    <div class="project-wrap">
-      <button class="project-pill" id="project-pill" title="프로젝트 전환">
-        <span class="proj-icon">📁</span>
-        <span class="proj-name" id="project-current">—</span>
-        <span class="proj-caret">▾</span>
-      </button>
+
+    <div class="grow"></div>
+
+    <div class="hdr-status">
+      <span class="hdr-dot" id="x32-dot"></span>
+      <span id="x32-text">연결 중…</span>
+      <span style="color:var(--mut3)">·</span>
+      <span id="fps-text">— fps</span>
+    </div>
+
+    <div class="hdr-project" id="project-btn">
+      <span class="lbl-sm">PROJECT</span>
+      <span style="font-weight:600" id="project-name">—</span>
+      <span style="color:var(--mut2); font-size:9px">▾</span>
       <div class="project-menu hidden" id="project-menu"></div>
     </div>
-    <span id="mode-pill" class="mode-pill mode-idle">—</span>
-    <div class="status-dot" id="dot"></div>
-    <span id="status-text">연결 중...</span>
-  </div>
-</header>
 
-<!-- Loud alarm when the audio device drops (status.mode === "error"). -->
-<div id="audio-alarm" class="audio-alarm hidden"></div>
-
-<main>
-  <!-- ─ Monitor ────────────────────────────────────────────────── -->
-  <section class="panel" id="panel-monitor">
-    <!-- Live "Director": always visible. Shows the active rule → transition,
-         NOW shot + upcoming filmstrip; stays in place (dimmed) when idle. -->
-    <div class="director idle" id="director">
-      <div class="director-head"><div class="dh-left">
-        <span class="dh-label">DIRECTOR</span>
-        <span class="dh-rule idle">○ 대기 중</span>
-      </div></div>
-      <div class="director-strip director-empty">활성 룰이 없습니다 — 룰이 매칭되면 트랜지션이 여기에 표시됩니다.</div>
-    </div>
-
-    <!-- Dynamic-mode settings — visible only when director_mode == "dynamic" -->
-    <div class="dynamic-settings hidden" id="dynamic-settings">
-      <span class="ds-title">⚙ 동적 플래닝</span>
-      <label class="ds-field">회전 간격
-        <input type="number" id="dyn-interval" min="0.5" step="0.5" value="8"> 초
-      </label>
-      <label class="ds-check">
-        <input type="checkbox" id="dyn-group-alt"> 같은 그룹 연속 회피
-      </label>
-      <span class="ds-hint">매크로의 <b>소스</b>(오디오 그룹)가 활성이면 자동으로 덱에 포함됩니다.</span>
-    </div>
-
-    <div class="legend">
-      <span><span class="dot" style="background:var(--green)"></span> 신호 있음</span>
-      <span><span class="dot" style="background:var(--yellow)"></span> 주의</span>
-      <span><span class="dot" style="background:var(--red)"></span> 클리핑</span>
-      <span style="margin-left:auto" id="peak-display"></span>
-      <span id="fps-display">— fps</span>
-    </div>
-
-    <div class="group-pills" id="group-pills"></div>
-    <div class="role-pills" id="role-pills"></div>
-
-    <div class="channels-grid" id="grid"></div>
-  </section>
-
-  <!-- ─ Channels ───────────────────────────────────────────────── -->
-  <section class="panel hidden" id="panel-channels">
-    <div class="panel-header">
-      <h2>채널 → 그룹 매핑</h2>
-      <p class="hint">채널 이름과 임계값(dB)을 설정하고, 어느 그룹에 속하는지 지정하세요.</p>
-    </div>
-    <div class="channels-table" id="channels-table"></div>
-  </section>
-
-  <!-- ─ Macros ─────────────────────────────────────────────────── -->
-  <section class="panel hidden" id="panel-macros">
-    <div class="panel-header">
-      <h2>매크로 — ASS 매크로 = 샷 1개</h2>
-      <p class="hint">
-        각 매크로는 ASS 안에서 <strong>PTZ 프리셋 이동 + 장면 전환</strong>을 한 번에 처리하는 "샷"입니다.
-        <strong>토큰</strong> = 이 매크로를 발동시키려고 ASS HTTP 서버로 보내는 payload(body),
-        <strong>카메라</strong> = 로테이션이 같은 카메라를 연속으로 안 쓰게 하는 데 씁니다.
-      </p>
-    </div>
-    <div class="macros-table" id="macros-table"></div>
-    <button class="btn primary" id="add-macro-btn" style="margin-top:12px">+ 매크로 추가</button>
-  </section>
-
-  <!-- ─ Transitions ────────────────────────────────────────────── -->
-  <section class="panel hidden" id="panel-transitions">
-    <div class="panel-header">
-      <h2>트랜지션 — 회전 정책 (매크로 덱)</h2>
-      <p class="hint">
-        덱에 매크로를 넣으면 <strong>로테이션 간격</strong>마다 한 장씩 뽑아 발동합니다.
-        카드덱처럼 전부 소진하면 다시 셔플해서 반복하고, <strong>카메라 교대</strong>를 켜면
-        같은 카메라가 연속으로 나오지 않습니다. 룰의 액션에서 이 트랜지션을 골라 연결하세요.
-      </p>
-    </div>
-    <div class="transitions-list" id="transitions-list"></div>
-    <button class="btn primary" id="add-transition-btn" style="margin-top:12px">+ 트랜지션 추가</button>
-  </section>
-
-  <!-- ─ Rules ──────────────────────────────────────────────────── -->
-  <section class="panel hidden" id="panel-rules">
-    <div class="panel-header rules-header">
-      <div>
-        <h2>룰 (위 → 아래 = 우선순위 높음 → 낮음)</h2>
-        <p class="hint">
-          그룹의 활성/비활성 조합이 맞으면 그 룰의 <strong>트랜지션</strong>이 켜지고,
-          트랜지션이 매크로를 로테이션합니다. 상단 헤더에서 <strong>AUTO</strong>·<strong>DRY</strong>로 엔진을 제어하세요.
-        </p>
+    <div class="hdr-cluster" style="padding-left:2px">
+      <span class="lbl-sm">OUTPUT</span>
+      <div class="seg">
+        <button class="segbtn" id="tg-dry">DRY</button>
+        <button class="segbtn" id="tg-send">LIVE</button>
       </div>
-      <button class="btn primary" id="add-rule-btn">+ 룰 추가</button>
+      <span class="hdr-out-status" id="out-status">—</span>
     </div>
+  </header>
 
-    <!-- 큐시트: 라이브 상황(미니 모니터) + 매칭 큐를 한 패널에 묶음.
-         미니 모니터는 그룹 활성/피크 dB · OBS 현재 씬을 보여주고,
-         큐 행은 NOW / NEXT / …로 우선순위 순 매칭 룰을 표시. -->
-    <section class="cuesheet">
-      <div class="cs-header">
-        <h2>큐시트</h2>
-        <span class="cs-sub">라이브 상황 + 우선순위 순 매칭 룰</span>
-      </div>
-      <div class="cs-mini-mon" id="cs-mini-mon"></div>
-      <div class="cs-queue" id="cs-queue">
-        <div class="cs-queue-empty">— 매칭되는 룰 없음 —</div>
-      </div>
-    </section>
+  <div class="audio-alarm hidden" id="audio-alarm"></div>
 
-    <div class="rules-list" id="rules-list"></div>
+  <!-- LIVE screen: built once by buildLiveShell(), updated per WS tick -->
+  <main class="screen-live" id="screen-live"></main>
 
-    <div class="panel-header" style="margin-top:28px">
-      <h2>활동 로그 (최근 20개)</h2>
-      <p class="hint">룰 매칭과 액션 실행 이력. DRY 모드에서도 실제 호출 직전까지 시뮬레이션됩니다.</p>
-    </div>
-    <div class="activity-log" id="activity-log"></div>
-  </section>
+  <!-- SETUP screen -->
+  <main class="screen-setup hidden" id="screen-setup">
+    <nav class="setup-nav" id="setup-nav"></nav>
+    <div class="pane" id="setup-pane"></div>
+  </main>
 
-  <!-- ─ Connections ────────────────────────────────────────────── -->
-  <section class="panel hidden" id="panel-connections">
-    <div class="panel-header">
-      <h2>ASS HTTP 서버 (룰 액션이 호출하는 주소)</h2>
-      <p class="hint">
-        모든 룰의 HTTP 액션이 이 주소로 요청을 보냅니다. ASS의
-        <strong>HTTP Servers</strong> 탭에서 띄운 서버 주소를 적어주세요.
-        각 룰의 액션에는 body만 입력하면 됩니다.
-      </p>
-    </div>
-
-    <div class="conn-card" style="max-width:640px">
-      <div class="conn-form">
-        <label class="full">
-          <span>URL</span>
-          <input type="text" id="ass-http-url" placeholder="http://localhost:7654/trigger">
-        </label>
-        <label>
-          <span>Method</span>
-          <select id="ass-http-method">
-            <option value="POST">POST</option>
-            <option value="GET">GET</option>
-          </select>
-        </label>
-      </div>
-      <div class="conn-actions">
-        <button class="btn primary" id="ass-http-save-btn">저장</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- ─ Groups ─────────────────────────────────────────────────── -->
-  <section class="panel hidden" id="panel-groups">
-    <div class="panel-header">
-      <h2>그룹별 반응 속도</h2>
-      <p class="hint">
-        Attack: 신호가 임계값을 넘은 뒤 "활성"으로 인정되기까지의 시간 ·
-        Release: 신호가 끊긴 뒤 "비활성"으로 돌아가기까지의 시간
-      </p>
-    </div>
-
-    <div class="groups-grid" id="groups-grid"></div>
-
-    <div class="add-group">
-      <input type="text" id="new-group-name" placeholder="새 그룹 이름 (예: choir)" maxlength="24">
-      <div id="new-group-palette"></div>
-      <button class="btn primary" id="add-group-btn">+ 그룹 추가</button>
-    </div>
-  </section>
-</main>
+  <div id="modal-root"></div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
