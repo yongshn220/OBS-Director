@@ -15,7 +15,7 @@
   },
   "runtime": {
     "auto": true,
-    "dry_run": false,
+    "dry_run": true,
     "refire_s": 3.0,
     "override_transition_id": null,
     "override_macro_id": null,
