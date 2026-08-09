@@ -3,6 +3,10 @@
 __pycache__/
 *.pyc
 
+# Secrets — never commit
+.env
+.env.*
+
 # Runtime temp files
 *.json.tmp
 
