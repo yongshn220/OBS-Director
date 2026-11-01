@@ -24,17 +24,24 @@ class GroupEvaluator:
     its threshold continuously for >= attack_ms, and returns to "inactive" only
     after all members have been under threshold for >= release_ms. Attack &
     release are latched independently per bucket so brief dropouts don't flap.
+
+    Beyond the on/off latch, each bucket also reports how STRONGLY and how LONG
+    it is present — `over_db` (loudest member's headroom above its own
+    threshold) and `active_for` (seconds since the latch closed). The planner
+    scores these to tell a subject that is genuinely leading from one that just
+    crossed the line, which a boolean alone cannot express.
     """
 
     def __init__(self, config_store):
         self.config_store = config_store
-        # bucket_name -> {"active": bool, "transition_since": float|None}
+        # bucket_name -> {"active": bool, "transition_since": float|None,
+        #                 "active_at": float|None}
         self._group_state: dict[str, dict[str, Any]] = {}
         self._role_state: dict[str, dict[str, Any]] = {}
 
     def evaluate(self, levels: list[float]) -> dict[str, dict[str, dict[str, Any]]]:
         """Return {"groups": {name: state}, "roles": {name: state}} where each
-        state is {active, raw_hot, peak_db, member_count}."""
+        state is {active, raw_hot, peak_db, over_db, active_for, member_count}."""
         cfg = self.config_store.snapshot()
         channels_cfg = cfg["channels"]
         groups_cfg = cfg["groups"]
@@ -95,15 +102,20 @@ class GroupEvaluator:
 
             any_hot = False
             peak_db = -math.inf
+            over_db = -math.inf   # loudest member's headroom above ITS OWN threshold
             for idx, thr_db in mems:
                 if 0 <= idx < len(levels):
                     db = rms_to_db(levels[idx])
                     if db > peak_db:
                         peak_db = db
+                    if db - thr_db > over_db:
+                        over_db = db - thr_db
                     if db >= thr_db:
                         any_hot = True
 
-            st = state_store.setdefault(name, {"active": False, "transition_since": None})
+            st = state_store.setdefault(
+                name, {"active": False, "transition_since": None, "active_at": None}
+            )
 
             # Track how long the raw signal has been opposite to the latched
             # state; flip once that persists past attack (off→on) / release
@@ -117,6 +129,7 @@ class GroupEvaluator:
                     elif (now - st["transition_since"]) * 1000.0 >= release_ms:
                         st["active"] = False
                         st["transition_since"] = None
+                        st["active_at"] = None
             else:
                 if not any_hot:
                     st["transition_since"] = None
@@ -126,11 +139,15 @@ class GroupEvaluator:
                     elif (now - st["transition_since"]) * 1000.0 >= attack_ms:
                         st["active"] = True
                         st["transition_since"] = None
+                        st["active_at"] = now
 
             result[name] = {
                 "active": st["active"],
                 "raw_hot": any_hot,
                 "peak_db": None if peak_db == -math.inf else round(peak_db, 1),
+                "over_db": None if over_db == -math.inf else round(over_db, 1),
+                "active_for": (round(now - st["active_at"], 2)
+                               if st["active"] and st["active_at"] is not None else None),
                 "member_count": len(mems),
             }
         return result

@@ -9,6 +9,8 @@ from typing import Any
 
 import numpy as np
 
+from .beat import BeatTracker
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -63,6 +65,12 @@ class AudioMonitor:
         self._lock = threading.Lock()             # guards self.levels
         self._stream_lock = threading.RLock()     # serializes start/stop/recover
 
+        # Tempo tracking. The channel set is cached because the callback runs
+        # per audio block and must not touch the config store.
+        self.beat = BeatTracker()
+        self._beat_channels: set[int] = set()
+        self.refresh_beat_channels()
+
         # Watchdog state.
         self._last_callback_ts: float = time.monotonic()
         self._last_recover_ts: float = 0.0
@@ -71,6 +79,20 @@ class AudioMonitor:
         self._stop_watchdog = threading.Event()
 
     # ── Public ────────────────────────────────────────────────────────
+
+    def refresh_beat_channels(self) -> None:
+        """Recompute which channels drive the tempo tracker.
+
+        Percussive close mics give by far the cleanest onsets, so the operator
+        marks them. With none marked we fall back to every assigned channel:
+        worse than a kit, but it still finds a beat in a band mix, and silently
+        tracking nothing would be the wrong failure.
+        """
+        chans = self.config_store.snapshot().get("channels") or []
+        marked = {c["id"] - 1 for c in chans if c.get("beat_source")}
+        if not marked:
+            marked = {c["id"] - 1 for c in chans if c.get("group") or c.get("role")}
+        self._beat_channels = {i for i in marked if 0 <= i < self.channels}
 
     def list_devices(self) -> list[dict[str, Any]]:
         if not _SD_AVAILABLE:
@@ -217,7 +239,9 @@ class AudioMonitor:
         # Freshness clock: proves the device is still delivering buffers. This is
         # what lets the watchdog tell "quiet" (callback firing, levels ~0) from
         # "dead" (callback stopped). Cheap single-float write — no lock needed.
-        self._last_callback_ts = time.monotonic()
+        now = time.monotonic()
+        self._last_callback_ts = now
+        beat_energy = 0.0
         with self._lock:
             for ch in range(self.channels):
                 if ch < indata.shape[1]:
@@ -225,6 +249,12 @@ class AudioMonitor:
                     prev = self.levels[ch]
                     # Fast attack, slow release for stable VU display
                     self.levels[ch] = rms if rms > prev else prev * 0.85 + rms * 0.15
+                    # Beat detection needs the RAW block energy, not the
+                    # smoothed meter value — the release curve above would
+                    # flatten exactly the transient an onset is made of.
+                    if ch in self._beat_channels:
+                        beat_energy = max(beat_energy, rms)
+        self.beat.feed(beat_energy, now)
 
     # ── Internal: watchdog ─────────────────────────────────────────────
 
@@ -237,6 +267,9 @@ class AudioMonitor:
                 logger.exception("audio watchdog tick failed")
 
     def _watchdog_tick(self) -> None:
+        # Cheap, and the only place the callback's cached channel set can pick
+        # up an edit made in the Channels tab.
+        self.refresh_beat_channels()
         cfg = self.config_store.snapshot()["audio"]
         if cfg.get("demo_mode"):
             return  # intentional demo — nothing to supervise

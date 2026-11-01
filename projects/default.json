@@ -3,226 +3,258 @@
     {
       "id": 1,
       "name": "Pastor (Head)",
-      "threshold_db": -45.0,
+      "threshold_db": -62.0,
       "role": "Pastor",
-      "group": "Pastor"
+      "group": "Pastor",
+      "beat_source": false
     },
     {
       "id": 2,
       "name": "Pastor",
-      "threshold_db": -63.0,
+      "threshold_db": -62.0,
       "role": "Pastor",
-      "group": "Pastor"
+      "group": "Pastor",
+      "beat_source": false
     },
     {
       "id": 3,
-      "name": "Singer #1 (Mun)",
-      "threshold_db": -66.0,
-      "role": "Mr Mun",
-      "group": "Leader"
+      "name": "Singer (Mun)",
+      "threshold_db": -64.0,
+      "role": null,
+      "group": "singers",
+      "beat_source": false
     },
     {
       "id": 4,
-      "name": "Singer #2",
-      "threshold_db": -59.0,
-      "role": "Singer #2",
-      "group": "singers"
+      "name": "Singer (사모님)",
+      "threshold_db": -56.0,
+      "role": "Singer #3",
+      "group": "singers",
+      "beat_source": false
     },
     {
       "id": 5,
-      "name": "Singer #3",
-      "threshold_db": -58.0,
-      "role": "Singer#3",
-      "group": "singers"
+      "name": "Singer C",
+      "threshold_db": -51.0,
+      "role": null,
+      "group": "singers",
+      "beat_source": false
     },
     {
       "id": 6,
-      "name": "SInger #4 (John Cho)",
-      "threshold_db": -63.0,
+      "name": "Singer (John Cho)",
+      "threshold_db": -50.0,
       "role": null,
-      "group": "Leader"
+      "group": "Leader",
+      "beat_source": false
     },
     {
       "id": 7,
-      "name": "Singer #5 (Jerry)",
+      "name": "Singer (Jerry)",
       "threshold_db": -55.0,
-      "role": "Singer #5",
-      "group": "singers"
+      "role": "Singer #1",
+      "group": "singers",
+      "beat_source": false
     },
     {
       "id": 8,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 9,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 10,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 11,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 12,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 13,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 14,
       "name": "Bluetooth",
       "threshold_db": -60.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 15,
       "name": "PC",
       "threshold_db": -61.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 16,
       "name": "PC",
       "threshold_db": -60.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 17,
-      "name": "",
-      "threshold_db": -64.0,
-      "role": null,
-      "group": null
+      "name": "Acustic Guitar",
+      "threshold_db": -45.0,
+      "role": "Acustic Guitar",
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 18,
-      "name": "",
+      "name": "Electric Guitar",
       "threshold_db": -45.0,
-      "role": null,
-      "group": null
+      "role": "Electric Guitar",
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 19,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 20,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 21,
       "name": "Piano L",
-      "threshold_db": -39.0,
+      "threshold_db": -46.0,
       "role": "Piano",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 22,
       "name": "Piano R",
-      "threshold_db": -39.0,
+      "threshold_db": -44.0,
       "role": "Piano",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 23,
       "name": "Synthesizer",
       "threshold_db": -54.0,
       "role": "Synth",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 24,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 25,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 26,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 27,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 28,
       "name": "",
       "threshold_db": -45.0,
       "role": null,
-      "group": null
+      "group": null,
+      "beat_source": false
     },
     {
       "id": 29,
       "name": "Drum",
       "threshold_db": -45.0,
       "role": "Drum",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 30,
       "name": "Drum",
       "threshold_db": -45.0,
       "role": "Drum",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 31,
       "name": "Drum",
       "threshold_db": -45.0,
       "role": "Drum",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": false
     },
     {
       "id": 32,
       "name": "Drum",
       "threshold_db": -45.0,
       "role": "Drum",
-      "group": "instruments"
+      "group": "instruments",
+      "beat_source": true
     }
   ],
   "groups": {
@@ -238,7 +270,7 @@
     },
     "Leader": {
       "attack_ms": 0.0,
-      "release_ms": 1500.0,
+      "release_ms": 3000.0,
       "color": "#ffd700"
     },
     "Pastor": {
@@ -253,10 +285,6 @@
       "color": "#00ff88"
     },
     "Singer #2": {
-      "group": "singers",
-      "color": "#00ff88"
-    },
-    "Singer#3": {
       "group": "singers",
       "color": "#00ff88"
     },
@@ -295,348 +323,205 @@
     "Synth": {
       "group": "instruments",
       "color": "#4488ff"
+    },
+    "Singer #3": {
+      "group": "singers",
+      "color": "#00ff88"
+    },
+    "Acustic Guitar": {
+      "group": "instruments",
+      "color": "#4488ff"
+    },
+    "Electric Guitar": {
+      "group": "instruments",
+      "color": "#4488ff"
     }
   },
+  "cameras": [
+    "1",
+    "2",
+    "3"
+  ],
   "macros": [
     {
       "id": "mac_b41a703e",
-      "name": "pastor-center",
-      "token": "pastor-center",
+      "name": "main-center",
+      "token": "main-center",
       "camera": "1",
-      "group": "pastor",
-      "sources": [
-        "Pastor"
-      ]
+      "subjects": [
+        "role:Pastor",
+        "role:Mr Cho",
+        "role:Mr Mun",
+        "WIDE"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_92019b41",
       "name": "stg-center",
       "token": "stg-center",
       "camera": "2",
-      "group": "center",
-      "sources": []
+      "subjects": [
+        "WIDE",
+        "team:singers"
+      ],
+      "size": "wide"
     },
     {
       "id": "mac_3728e461",
       "name": "stg-person1",
       "token": "stg-person1",
       "camera": "2",
-      "group": "singer1",
-      "sources": [
-        "Singer #1"
-      ]
+      "subjects": [
+        "role:Singer #1"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_8dd23531",
       "name": "stg-person2",
       "token": "stg-person2",
       "camera": "2",
-      "group": "singer2",
-      "sources": [
-        "Singer #2"
-      ]
+      "subjects": [
+        "role:Mr Cho",
+        "role:Mr Mun"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_9027ce67",
       "name": "stg-person3",
       "token": "stg-person3",
       "camera": "2",
-      "group": "singer3",
-      "sources": [
-        "Singer#3"
-      ]
+      "subjects": [
+        "role:Singer#3",
+        "role:Singer #3"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_bba1d258",
       "name": "rs-center",
       "token": "rs-center",
       "camera": "3",
-      "group": "center",
-      "sources": []
+      "subjects": [
+        "WIDE"
+      ],
+      "size": "wide"
     },
     {
       "id": "mac_1f521519",
       "name": "rs-person1",
       "token": "rs-person1",
       "camera": "3",
-      "group": "singer1",
-      "sources": [
-        "Singer #1"
-      ]
+      "subjects": [
+        "role:Singer #1"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_9784265d",
       "name": "rs-person2",
       "token": "rs-person2",
       "camera": "3",
-      "group": "singer2",
-      "sources": [
-        "Singer #2"
-      ]
+      "subjects": [
+        "role:Mr Mun",
+        "role:Mr Cho"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_33cbb97e",
       "name": "rs-person3",
       "token": "rs-person3",
       "camera": "3",
-      "group": "singer3",
-      "sources": [
-        "Singer#3"
-      ]
+      "subjects": [
+        "role:Singer#3",
+        "role:Singer #3"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_9ad224f8",
       "name": "rs-drum",
       "token": "rs-drum",
       "camera": "3",
-      "group": "drum",
-      "sources": [
-        "Drum"
-      ]
+      "subjects": [
+        "role:Drum"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_8f0d0bac",
       "name": "rs-piano",
       "token": "rs-piano",
       "camera": "3",
-      "group": "piano",
-      "sources": [
-        "Piano"
-      ]
+      "subjects": [
+        "role:Piano"
+      ],
+      "size": "tight"
     },
     {
       "id": "mac_6e3af0ad",
       "name": "stg-piano",
       "token": "stg-piano",
       "camera": "2",
-      "group": "piano",
-      "sources": [
-        "Piano"
-      ]
-    },
-    {
-      "id": "mac_4a08fad6",
-      "name": "mv-iphone1",
-      "token": "mv-iphone1",
-      "camera": "4",
-      "group": "mv-1",
-      "sources": []
-    }
-  ],
-  "transitions": [
-    {
-      "id": "trn_e89b701f",
-      "name": "All Rotate",
-      "deck": [
-        "mac_b41a703e",
-        "mac_92019b41",
-        "mac_8dd23531",
-        "mac_bba1d258",
-        "mac_1f521519",
-        "mac_9784265d",
-        "mac_33cbb97e",
-        "mac_9ad224f8",
-        "mac_8f0d0bac"
+      "subjects": [
+        "role:Piano"
       ],
-      "interval_s": 10.0,
-      "camera_alternate": true,
-      "camera_weights": {
-        "1": 2,
-        "2": 4,
-        "3": 5
-      },
-      "group_alternate": true
-    },
-    {
-      "id": "trn_3cc53921",
-      "name": "Center",
-      "deck": [
-        "mac_b41a703e"
-      ],
-      "interval_s": 4.0,
-      "camera_alternate": false,
-      "camera_weights": {},
-      "group_alternate": false
-    },
-    {
-      "id": "trn_9af05054",
-      "name": "Piano",
-      "deck": [
-        "mac_8f0d0bac"
-      ],
-      "interval_s": 4.0,
-      "camera_alternate": false,
-      "camera_weights": {},
-      "group_alternate": false
-    },
-    {
-      "id": "trn_2ab8a89c",
-      "name": "Drum",
-      "deck": [
-        "mac_9ad224f8"
-      ],
-      "interval_s": 2.0,
-      "camera_alternate": true,
-      "camera_weights": {},
-      "group_alternate": false
+      "size": "tight"
     }
   ],
   "rules": [
     {
-      "id": "rule_a413e6f7",
-      "name": "None",
-      "priority": 0,
-      "enabled": true,
-      "conditions": [
-        {
-          "group": "singers",
-          "state": "inactive"
-        },
-        {
-          "group": "instruments",
-          "state": "inactive"
-        },
-        {
-          "group": "Leader",
-          "state": "inactive"
-        },
-        {
-          "group": "Pastor",
-          "state": "inactive"
-        },
-        {
-          "group": "Piano",
-          "state": "inactive"
-        },
-        {
-          "group": "Drum",
-          "state": "inactive"
-        }
-      ],
-      "actions": [
-        {
-          "type": "transition",
-          "transition_id": "trn_3cc53921"
-        }
-      ],
-      "cooldown_s": 3.0
-    },
-    {
-      "id": "rule_72a1088b",
-      "name": "Worship Leader",
+      "id": "rule_7a960113",
+      "name": "Pastor",
       "priority": 70,
       "enabled": true,
       "conditions": [
         {
-          "group": "Leader",
+          "group": "Pastor",
           "state": "active"
-        },
-        {
-          "group": "singers",
-          "state": "inactive"
         }
       ],
-      "actions": [
-        {
-          "type": "transition",
-          "transition_id": "trn_3cc53921"
-        }
-      ],
-      "cooldown_s": 3.0
+      "profile": {
+        "who": [
+          "role:Pastor"
+        ],
+        "cameras": [],
+        "hold_s": 3.0
+      }
     },
     {
-      "id": "rule_7a960113",
-      "name": "Pastor",
+      "id": "rule_72a1088b",
+      "name": "Worship Leader",
       "priority": 60,
       "enabled": true,
       "conditions": [
         {
-          "group": "Pastor",
-          "state": "active"
-        }
-      ],
-      "actions": [
-        {
-          "type": "transition",
-          "transition_id": "trn_3cc53921"
-        }
-      ],
-      "cooldown_s": 3.0
-    },
-    {
-      "id": "rule_9ebbb26b",
-      "name": "Piano Only",
-      "priority": 10,
-      "enabled": true,
-      "conditions": [
-        {
-          "group": "Piano",
+          "group": "Leader",
           "state": "active"
         },
         {
           "group": "singers",
           "state": "inactive"
-        },
-        {
-          "group": "Leader",
-          "state": "inactive"
-        },
-        {
-          "group": "Pastor",
-          "state": "inactive"
-        },
-        {
-          "group": "Drum",
-          "state": "inactive"
         }
       ],
-      "actions": [
-        {
-          "type": "transition",
-          "transition_id": "trn_9af05054"
-        }
-      ],
-      "cooldown_s": 3.0
-    },
-    {
-      "id": "rule_66c876b8",
-      "name": "Drum Only",
-      "priority": 10,
-      "enabled": true,
-      "conditions": [
-        {
-          "group": "Leader",
-          "state": "inactive"
-        },
-        {
-          "group": "singers",
-          "state": "inactive"
-        },
-        {
-          "group": "Pastor",
-          "state": "inactive"
-        },
-        {
-          "group": "Drum",
-          "state": "active"
-        },
-        {
-          "group": "Piano",
-          "state": "inactive"
-        }
-      ],
-      "actions": [
-        {
-          "type": "transition",
-          "transition_id": "trn_2ab8a89c"
-        }
-      ],
-      "cooldown_s": 3.0
+      "profile": {
+        "who": [
+          "role:Mr Mun",
+          "role:Mr Cho"
+        ],
+        "cameras": [
+          "1"
+        ],
+        "hold_s": 3.0
+      }
     },
     {
       "id": "rule_c314d7d0",
       "name": "All Session",
-      "priority": 20,
+      "priority": 50,
       "enabled": true,
       "conditions": [
         {
@@ -652,13 +537,84 @@
           "state": "active"
         }
       ],
-      "actions": [
+      "profile": {
+        "who": [
+          "WIDE",
+          "role:Singer #1",
+          "role:Singer #2",
+          "role:Piano",
+          "role:Drum",
+          "role:Pastor",
+          "role:Mr Cho",
+          "role:Singer #3",
+          "team:singers",
+          "team:instruments",
+          "team:Leader",
+          "role:Singer #4",
+          "role:Singer #5",
+          "team:Pastor",
+          "role:Mr Mun"
+        ],
+        "cameras": [
+          "1",
+          "2",
+          "3"
+        ],
+        "hold_s": 3.0
+      }
+    },
+    {
+      "id": "rule_a413e6f7",
+      "name": "None",
+      "priority": 20,
+      "enabled": true,
+      "conditions": [
         {
-          "type": "transition",
-          "transition_id": "trn_e89b701f"
+          "group": "singers",
+          "state": "inactive"
+        },
+        {
+          "group": "instruments",
+          "state": "inactive"
+        },
+        {
+          "group": "Leader",
+          "state": "inactive"
+        },
+        {
+          "group": "Pastor",
+          "state": "inactive"
+        },
+        {
+          "group": "Piano",
+          "state": "inactive"
+        },
+        {
+          "group": "Drum",
+          "state": "inactive"
         }
       ],
-      "cooldown_s": 3.0
+      "profile": {
+        "who": [],
+        "cameras": [
+          "1"
+        ],
+        "hold_s": 3.0
+      }
+    },
+    {
+      "id": "rule_4b36a33f",
+      "name": "Others",
+      "priority": 10,
+      "enabled": true,
+      "conditions": [],
+      "profile": {
+        "who": [],
+        "cameras": [
+          "1"
+        ],
+        "hold_s": 3.0
+      }
     }
   ]
 }

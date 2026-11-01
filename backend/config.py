@@ -12,15 +12,17 @@ def new_macro_id() -> str:
     return "mac_" + uuid.uuid4().hex[:8]
 
 
-def new_transition_id() -> str:
-    return "trn_" + uuid.uuid4().hex[:8]
-
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 PROJECTS_DIR = CONFIG_PATH.parent / "projects"
 
 # Keys that live inside a project file (per-project setup the user switches
 # between for different services / events).
-PROJECT_KEYS = ("channels", "groups", "roles", "macros", "transitions", "rules")
+PROJECT_KEYS = ("channels", "groups", "roles", "cameras", "macros", "rules")
+# Same, plus keys that USED to live in a project file. Only used when sniffing
+# a legacy top-level config.json so an old `transitions` array still reaches
+# _normalize_project (which folds it into rule profiles) instead of being
+# stranded in globals.
+LEGACY_PROJECT_KEYS = PROJECT_KEYS + ("transitions",)
 # Keys that stay in the global config.json — hardware/runtime state that
 # applies regardless of which project is active.
 GLOBAL_KEYS = ("audio", "connections", "runtime", "current_project")
@@ -42,6 +44,41 @@ DEFAULT_GROUPS: dict[str, dict[str, Any]] = {
 #   {role_name: {"group": <group_name|None>, "color": "#rrggbb"}}
 DEFAULT_ROLES: dict[str, dict[str, Any]] = {}
 
+# ── Shot subjects ───────────────────────────────────────────────────────
+# Every shot names WHO it is of, as a single prefixed key:
+#   "role:Piano"        — a specific person/instrument (fine)
+#   "team:instruments"  — a whole group (coarse)
+#   "WIDE"              — no single subject (stage wide, establishing, cutaway)
+# This replaces the old macro `sources` (an OR-set of audio-group names) +
+# `group` (a free-form visual-subject tag), which duplicated each other and
+# had no way to express a wide shot's real trigger. WIDE is not "always on":
+# the planner surfaces it when several subjects are live at once, when nothing
+# is live (a breather), or when the shot grammar is due for an establishing
+# beat — none of which an OR-set could say.
+SUBJECT_WIDE = "WIDE"
+SHOT_SIZES = ("wide", "mid", "tight")
+
+
+def role_subject(name: str) -> str:
+    return f"role:{name}"
+
+
+def team_subject(name: str) -> str:
+    return f"team:{name}"
+
+
+def split_subject(subject: str | None) -> tuple[str, str]:
+    """('role'|'team'|'wide'|'none', bare_name). The planner uses the kind to
+    decide which activity table (roles vs groups) to look the subject up in."""
+    if not subject:
+        return ("none", "")
+    if subject == SUBJECT_WIDE:
+        return ("wide", "")
+    kind, _, name = subject.partition(":")
+    if kind in ("role", "team") and name:
+        return (kind, name)
+    return ("none", "")
+
 
 class ProjectNameError(ValueError):
     """Raised when a project name fails validation."""
@@ -62,53 +99,135 @@ def _default_channels() -> list[dict[str, Any]]:
     # A channel picks ONE role (fine identity) and belongs to ONE group (coarse
     # category). group is normally derived from the role, but may be set alone
     # for a role-less channel. Both default to None (unconfigured).
+    # `beat_source` marks a channel the tempo tracker listens to — percussive
+    # inputs give a far cleaner onset than the full mix.
     return [
-        {"id": i + 1, "name": "", "role": None, "group": None, "threshold_db": -45.0}
+        {"id": i + 1, "name": "", "role": None, "group": None,
+         "threshold_db": -45.0, "beat_source": False}
         for i in range(DEFAULT_CHANNELS)
     ]
 
 
+# Role names that look percussive enough to seed `beat_source` on first load.
+# Only ever used to pre-fill the flag; the operator's choice always wins after.
+_DRUMMY = ("drum", "퍼커션", "드럼", "kick", "snare", "perc")
+
+
 def _empty_project() -> dict[str, Any]:
-    """A fresh project: default channels, seed groups, no roles/rules/macros/transitions."""
+    """A fresh project: default channels, seed groups, no roles/rules/shots."""
     return {
         "channels": _default_channels(),
         "groups": dict(DEFAULT_GROUPS),
         "roles": dict(DEFAULT_ROLES),
+        "cameras": [],
         "macros": [],
-        "transitions": [],
         "rules": [],
     }
 
 
-def _normalize_macro(m: dict[str, Any]) -> dict[str, Any]:
-    """Coerce a macro entry. camera is kept as-is (str/int/None) so the engine
-    can compare equality; token is the payload POSTed to ASS to fire it; group
-    (optional) reuses a channel group name so a transition can avoid two
-    same-subject shots in a row; sources is the set of AUDIO group names whose
-    live activity should surface this shot in dynamic-planning mode."""
+def _normalize_cameras(project: dict[str, Any]) -> list[str]:
+    """The physical cameras available, as an explicit ordered list.
+
+    Deriving this from whatever the shots happened to mention was a mistake:
+    a camera could not exist until some shot already used it, so the assign
+    grid had no column to fill in and there was no way to set a rig up before
+    building shots. Cameras are real hardware with a stable identity, so the
+    project states them outright. Any camera a shot names is folded in, which
+    both migrates older projects and keeps a hand-edited file consistent.
+    """
+    cams: list[str] = []
+    for c in (project.get("cameras") or []):
+        c = str(c).strip()
+        if c and c not in cams:
+            cams.append(c)
+    for m in (project.get("macros") or []):
+        c = m.get("camera")
+        c = str(c).strip() if c is not None else ""
+        if c and c not in cams:
+            cams.append(c)
+    # Numeric names sort naturally; anything else trails in insertion order.
+    return sorted(cams, key=lambda c: (0, int(c), "") if c.isdigit() else (1, 0, c))
+
+
+def _migrate_macro_subject(m: dict[str, Any], roles: dict[str, Any],
+                           groups: dict[str, Any]) -> str | None:
+    """Derive a `subject` from the legacy `sources` list (one-time migration).
+
+    Legacy shape was an OR-set of role/group names, so:
+      - exactly one source  → that role (or team, if it names a group)
+      - several sources     → their common team if they share one, else WIDE
+      - no sources          → WIDE. Under the old engine an empty `sources`
+        meant "never selectable", which is exactly how the stage/room wide
+        shots ended up configured — they were the shots the operator could not
+        express. WIDE is what they were always meant to be.
+    """
+    srcs = [str(s).strip() for s in (m.get("sources") or []) if str(s).strip()]
+    if not srcs:
+        return SUBJECT_WIDE
+    if len(srcs) == 1:
+        s = srcs[0]
+        if s in roles:
+            return role_subject(s)
+        if s in groups:
+            return team_subject(s)
+        return role_subject(s)  # stale name — keep it visible rather than lose it
+    owning = {roles[s]["group"] for s in srcs if s in roles and roles[s].get("group")}
+    if len(owning) == 1:
+        return team_subject(owning.pop())
+    return SUBJECT_WIDE
+
+
+def _normalize_macro(m: dict[str, Any], roles: dict[str, Any],
+                     groups: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a shot entry.
+
+    A shot is defined ONCE — name, token, camera, size — and then assigned to
+    whoever it covers. `subjects` is that assignment: a list, because one shot
+    can legitimately cover more than one person (a two-shot of the front pair)
+    and because assignment is edited from the subject's side, not the shot's.
+    An empty list means the shot exists but is not assigned to anyone yet: it
+    stays available for a manual take and for explicit scene shot lists, and
+    the planner simply never auto-selects it.
+
+    camera is kept as-is (str/int/None) so the planner can compare equality;
+    token is the payload POSTed to ASS to fire it; size is the framing, which
+    nudges how long the shot holds and drives the establishing cadence.
+
+    Subjects are NOT pruned against the live role/group lists — a rename would
+    otherwise silently delete the link. A dangling subject never becomes
+    eligible, and the assign grid shows it in its own row so it can be
+    re-pointed rather than quietly lost.
+    """
     cam = m.get("camera")
     if isinstance(cam, str):
         cam = cam.strip() or None
-    grp = m.get("group")
-    grp = grp.strip() if isinstance(grp, str) and grp.strip() else None
-    # sources: audio-group names this shot represents. Free-form (NOT pruned
-    # against the group list, like `group`) — the dynamic planner simply
-    # intersects it with the live active-group set, so a stale name is a
-    # harmless no-op rather than lost data on a transient group rename.
-    sources: list[str] = []
-    seen: set[str] = set()
-    for s in (m.get("sources") or []):
-        s = str(s).strip()
-        if s and s not in seen:
-            seen.add(s)
-            sources.append(s)
+
+    if "subjects" in m:
+        raw = m.get("subjects") or []
+    elif "subject" in m:                       # single-subject era
+        raw = [m["subject"]] if m.get("subject") else []
+    elif "sources" in m or "group" in m:       # pre-subject era
+        migrated = _migrate_macro_subject(m, roles, groups)
+        raw = [migrated] if migrated else []
+    else:
+        raw = []
+    subjects: list[str] = []
+    for s in raw:
+        s = str(s).strip() if s else ""
+        if s and s not in subjects and split_subject(s)[0] != "none":
+            subjects.append(s)
+
+    size = str(m.get("size") or "").strip().lower()
+    if size not in SHOT_SIZES:
+        size = "wide" if SUBJECT_WIDE in subjects else "tight"
+
     return {
         "id": str(m.get("id") or new_macro_id()),
         "name": str(m.get("name") or ""),
         "token": str(m.get("token") or "").strip(),
         "camera": cam,
-        "group": grp,
-        "sources": sources,
+        "subjects": subjects,
+        "size": size,
     }
 
 
@@ -122,31 +241,93 @@ def _to_float(v: Any, default: float) -> float:
         return default
 
 
-def _normalize_transition(t: dict[str, Any], valid_macro_ids: set[str]) -> dict[str, Any]:
-    """Coerce a transition. The deck is filtered to existing macro ids so a
-    deleted macro never lingers as a dangling reference."""
-    deck = [str(mid) for mid in (t.get("deck") or []) if str(mid) in valid_macro_ids]
-    # camera_weights: how many times each camera appears per rotation round
-    # (string camera value -> int >= 1). Absent cameras default to 1.
-    weights: dict[str, int] = {}
-    raw_w = t.get("camera_weights")
-    if isinstance(raw_w, dict):
-        for k, v in raw_w.items():
-            try:
-                iv = int(v)
-            except (TypeError, ValueError):
-                continue
-            if iv >= 1:
-                weights[str(k)] = iv
-    return {
-        "id": str(t.get("id") or new_transition_id()),
-        "name": str(t.get("name") or ""),
-        "deck": deck,
-        "interval_s": _to_float(t.get("interval_s"), 8.0),
-        "camera_alternate": bool(t.get("camera_alternate", True)),
-        "camera_weights": weights,
-        "group_alternate": bool(t.get("group_alternate", False)),
-    }
+# Default minimum time a scene keeps the floor once it takes over. Only a
+# default now — each scene carries its own `hold_s`.
+SCENE_HOLD_S = 3.0
+SCENE_HOLD_MAX_S = 60.0
+
+# A scene says WHEN it applies (the rule's conditions) and WHO it may cover.
+# It says nothing about how to shoot — that is one algorithm, the same in every
+# scene, so there is no per-scene pacing to get out of sync between services.
+DEFAULT_PROFILE: dict[str, Any] = {
+    # Who this scene may cut to. Empty = every assigned subject, which is what
+    # lets a newly-active singer get covered without being listed first.
+    "who": [],
+    # Which cameras this scene may use at all. Empty = every camera. This is a
+    # property of the scene, not of each subject: a segment is shot on a set of
+    # cameras and everyone in it is covered from those, so stating it per
+    # subject would just be the same list repeated with more ways to get it
+    # wrong. Named by camera rather than by shot id so a re-rig cannot break it.
+    "cameras": [],
+    # Once this scene takes over, it keeps the floor for at least this long,
+    # even against a higher-priority rule. Per scene because the right answer
+    # differs: a sermon should not be yanked away by a stray note, while a
+    # worship scene wants to give way promptly.
+    "hold_s": SCENE_HOLD_S,
+}
+
+# The one pacing control, global rather than per-scene: how many beats a shot
+# holds. 4/8/16 = 1/2/4 bars in common time. The seconds are the fallback used
+# when the beat tracker has no lock (speech, or music with no drums).
+PACES = ("fast", "normal", "slow")
+PACE_BEATS = {"fast": 4, "normal": 8, "slow": 16}
+PACE_SECONDS = {"fast": 4.0, "normal": 7.0, "slow": 12.0}
+DEFAULT_PACE = "normal"
+
+
+
+def default_profile() -> dict[str, Any]:
+    """A fresh copy of DEFAULT_PROFILE — its list/dict members must not be
+    shared between scenes."""
+    return {k: (list(v) if isinstance(v, list) else dict(v) if isinstance(v, dict) else v)
+            for k, v in DEFAULT_PROFILE.items()}
+
+
+def _normalize_profile(p: dict[str, Any] | None, macros: list[dict[str, Any]]) -> dict[str, Any]:
+    """Coerce a scene profile down to its one field: who it may cover.
+
+    Earlier shapes named SHOTS (a deck, or a pinned single). Shots are one step
+    too low: which angle to use is the algorithm's job, and a scene that lists
+    angles goes stale the moment a camera is re-rigged. Any recorded shot list
+    is therefore folded up into the subjects those shots cover.
+    """
+    p = p if isinstance(p, dict) else {}
+    raw = p.get("who")
+    if raw is None:
+        # Fold a legacy shot list (incl. a single pinned shot) up to subjects.
+        by_id = {m["id"]: m for m in macros}
+        legacy = p.get("shots")
+        if legacy is None and p.get("forced_shot"):
+            legacy = [p["forced_shot"]]
+        raw = [s for mid in (legacy or [])
+               for s in (by_id.get(str(mid), {}).get("subjects") or [])]
+    # A short-lived shape keyed cameras per subject; fold it back to one list
+    # of subjects plus the union of the cameras it named.
+    inherited: list[str] = []
+    if isinstance(raw, dict):
+        for cams in raw.values():
+            for c in (cams or []):
+                c = str(c).strip()
+                if c and c not in inherited:
+                    inherited.append(c)
+        raw = list(raw.keys())
+    if not isinstance(raw, list):
+        raw = []
+
+    who: list[str] = []
+    for s in raw:
+        s = str(s).strip() if s else ""
+        if s and s not in who and split_subject(s)[0] != "none":
+            who.append(s)
+
+    cameras: list[str] = []
+    for c in (p.get("cameras") if p.get("cameras") is not None else inherited) or []:
+        c = str(c).strip()
+        if c and c not in cameras:
+            cameras.append(c)
+    hold = _to_float(p.get("hold_s"), SCENE_HOLD_S)
+    hold = max(0.0, min(SCENE_HOLD_MAX_S, hold))
+    return {"who": who, "cameras": cameras, "hold_s": hold}
 
 
 def _default_globals() -> dict[str, Any]:
@@ -162,19 +343,20 @@ def _default_globals() -> dict[str, Any]:
         "runtime": {
             "auto": True,
             "dry_run": True,
-            "refire_s": 3.0,
-            # Director mode: "rules" (match rules → pick a transition) or
-            # "dynamic" (build the rotation live from whichever audio groups are
-            # active right now). Persists across restarts — it's a deliberate
-            # operating mode, not a transient pin.
+            # Director mode: "rules" (a matching rule frames the scene, the
+            # planner fills it) or "dynamic" (skip rules entirely and shoot the
+            # default profile against whatever is live). Persists across
+            # restarts — it's a deliberate operating mode, not a transient pin.
             "director_mode": "rules",
-            # Dynamic-planning knobs (used only in "dynamic" mode).
-            "dynamic": {"interval_s": 8.0, "group_alternate": True},
+            # The one pacing control (see PACES).
+            "pace": DEFAULT_PACE,
+            # The scene used when no rule matches, and in "dynamic" mode.
+            "profile": default_profile(),
             # Operator's manual pins (null = rules choose). override_macro_id
-            # holds one shot; override_transition_id forces one transition.
-            # Both reset to null on startup so an auto-launched service never
-            # boots stuck on a hand-picked shot/transition.
-            "override_transition_id": None,
+            # holds one shot; override_rule_id forces one scene. Both reset to
+            # null on startup so an auto-launched service never boots stuck on
+            # a hand-picked shot/scene.
+            "override_rule_id": None,
             "override_macro_id": None,
         },
         "connections": {
@@ -202,8 +384,8 @@ def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
     project.setdefault("channels", _default_channels())
     project.setdefault("groups", dict(DEFAULT_GROUPS))
     project.setdefault("roles", dict(DEFAULT_ROLES))
+    project.setdefault("cameras", [])
     project.setdefault("macros", [])
-    project.setdefault("transitions", [])
     project.setdefault("rules", [])
 
     groups = project.get("groups")
@@ -260,48 +442,66 @@ def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
         ch["role"] = role
         ch["group"] = grp
         ch["threshold_db"] = _to_float(ch.get("threshold_db"), -45.0)
+        # Seed the tempo source once, from role names that read as percussion,
+        # so an existing rig gets a beat without hunting for the setting. Only
+        # ever a seed: once the key exists the operator's choice is kept.
+        if "beat_source" in ch:
+            ch["beat_source"] = bool(ch["beat_source"])
+        else:
+            ch["beat_source"] = bool(role and any(d in role.lower() for d in _DRUMMY))
     project["channels"] = merged
 
-    # Macros (dedupe ids; keep first wins). The macro `group` is a FREE-FORM
-    # visual-subject tag (e.g. "Singer1", "PIANO") used only for the
-    # "그룹 교대" anti-repeat option — intentionally independent of the
-    # channel/audio groups, which are coarser, so it is NOT pruned against them.
+    # Shots (dedupe ids; first wins). Subjects are resolved against roles /
+    # groups only for the one-time legacy migration — see _normalize_macro.
     macros: list[dict[str, Any]] = []
     macro_ids: set[str] = set()
     for m in (project.get("macros") or []):
-        nm = _normalize_macro(m)
+        nm = _normalize_macro(m, roles, groups)
         if nm["id"] in macro_ids:
             nm["id"] = new_macro_id()
         macro_ids.add(nm["id"])
         macros.append(nm)
     project["macros"] = macros
+    project["cameras"] = _normalize_cameras(project)
 
-    # Transitions (deck filtered to existing macros; dedupe ids)
-    transitions: list[dict[str, Any]] = []
-    transition_ids: set[str] = set()
-    for t in (project.get("transitions") or []):
-        nt = _normalize_transition(t, macro_ids)
-        if nt["id"] in transition_ids:
-            nt["id"] = new_transition_id()
-        transition_ids.add(nt["id"])
-        transitions.append(nt)
-    project["transitions"] = transitions
-
-    # Rules: drop transition actions that reference a deleted transition so
-    # the engine never dispatches to a missing target.
+    # Rules carry their scene profile inline. Two older shapes get folded up
+    # here: a shared `transition` referenced by id (its deck → the subjects
+    # that deck covered), and an inline shot list (same fold).
+    legacy_transitions = {
+        str(t.get("id")): t for t in (project.get("transitions") or [])
+        if isinstance(t, dict) and t.get("id")
+    }
     for rule in (project.get("rules") or []):
-        kept = []
-        for a in (rule.get("actions") or []):
-            # Prune only genuinely DANGLING transition refs (non-empty id that
-            # points at a deleted transition). An empty transition_id is an
-            # intentional "not yet chosen" placeholder — keep it so a freshly
-            # added transition action survives the persist round-trip until the
-            # user picks a target. (The engine no-ops an empty id.)
-            tid = a.get("transition_id")
-            if a.get("type") == "transition" and tid and tid not in transition_ids:
-                continue
-            kept.append(a)
-        rule["actions"] = kept
+        if not isinstance(rule, dict):
+            continue
+        # A scene is referred to by name everywhere in the UI (pins, on-air
+        # readout, the also-matching queue), so it must always have one.
+        rule["name"] = str(rule.get("name") or "").strip() or "이름 없는 장면"
+        profile = rule.get("profile")
+        if not isinstance(profile, dict):
+            tid = next(
+                (a.get("transition_id") for a in (rule.get("actions") or [])
+                 if isinstance(a, dict) and a.get("type") == "transition" and a.get("transition_id")),
+                None,
+            )
+            t = legacy_transitions.get(str(tid)) if tid else None
+            profile = {"shots": list(t.get("deck") or [])} if t else {}
+        rule["profile"] = _normalize_profile(profile, macros)
+        # A scene no longer dispatches or paces; it frames. The raw-HTTP escape
+        # hatch `actions` held is equivalent to a shot whose token is that body.
+        rule.pop("actions", None)
+        rule.pop("cooldown_s", None)   # now the fixed SCENE_HOLD_S
+    project.pop("transitions", None)
+
+    # The default scene lives in globals but its `who` is checked against the
+    # same subject space, so it is normalized here. Absent when normalizing a
+    # bare project file — _load_or_init re-runs this after merging globals.
+    rt = project.get("runtime")
+    if isinstance(rt, dict):
+        rt["profile"] = _normalize_profile(rt.get("profile"), macros)
+        pace = str(rt.get("pace") or "").strip().lower()
+        rt["pace"] = pace if pace in PACES else DEFAULT_PACE
+        rt.pop("dynamic", None)
 
     return project
 
@@ -340,7 +540,7 @@ class ConfigStore:
                     globals_raw = json.load(f)
             except (json.JSONDecodeError, OSError):
                 globals_raw = {}
-            for k in PROJECT_KEYS:
+            for k in LEGACY_PROJECT_KEYS:
                 if k in globals_raw:
                     legacy_project[k] = globals_raw.pop(k)
 
@@ -366,13 +566,6 @@ class ConfigStore:
             project_data = _empty_project()
             needs_write = True
 
-        # Normalize FIRST, then persist — so a freshly created / migrated
-        # project file is written in its complete shape (macros, transitions,
-        # migrated channels) rather than the raw pre-normalized input.
-        project_data = _normalize_project(project_data)
-        if needs_write:
-            self._write_project_file(current, project_data)
-
         # Fill global defaults for anything the file omitted.
         defaults_g = _default_globals()
         for k, v in defaults_g.items():
@@ -382,22 +575,29 @@ class ConfigStore:
         # survive a restart (the app auto-launches at login).
         if isinstance(globals_raw.get("runtime"), dict):
             rt = globals_raw["runtime"]
-            rt["override_transition_id"] = None
+            rt.pop("override_transition_id", None)   # renamed → override_rule_id
+            rt.pop("refire_s", None)                 # http_request actions are gone
+            rt["override_rule_id"] = None
             rt["override_macro_id"] = None
-            # Backfill dynamic-planning keys on pre-existing configs (director
-            # mode DOES persist across restart, unlike the pins above).
+            # Backfill planning keys on pre-existing configs (director mode DOES
+            # persist across restart, unlike the pins above). A legacy
+            # `dynamic: {interval_s}` becomes the default profile's target hold.
             rt["director_mode"] = "dynamic" if rt.get("director_mode") == "dynamic" else "rules"
-            dyn = rt.get("dynamic")
-            if not isinstance(dyn, dict):
-                dyn = {}
-            dyn.setdefault("interval_s", 8.0)
-            dyn.setdefault("group_alternate", True)
-            rt["dynamic"] = dyn
+            rt.pop("dynamic", None)     # pacing is global now, not per-mode
+            if not isinstance(rt.get("profile"), dict):
+                rt["profile"] = {}      # shaped by the _normalize_project pass below
 
-        # Persist globals stripped of any legacy project keys.
-        self._write_globals_file(globals_raw)
-
-        return {**globals_raw, **project_data}
+        # Normalize the MERGED shape so the default profile (globals) is checked
+        # against the shot list (project) in one pass, then persist — a freshly
+        # created or migrated file is written complete rather than raw.
+        merged = _normalize_project({**globals_raw, **project_data})
+        # Always write back, not just when `needs_write`: normalization also
+        # performs the one-time migration (shot subjects, transitions → rule
+        # profiles), and leaving that only in memory would re-run it on every
+        # boot against a file that never catches up.
+        self._write_project_file(current, merged)
+        self._write_globals_file(merged)
+        return merged
 
     # ── Persistence helpers ────────────────────────────────────────
 
@@ -412,7 +612,7 @@ class ConfigStore:
         tmp.replace(target)
 
     def _write_globals_file(self, data: dict[str, Any]) -> None:
-        clean = {k: v for k, v in data.items() if k not in PROJECT_KEYS}
+        clean = {k: v for k, v in data.items() if k not in LEGACY_PROJECT_KEYS}
         self._atomic_write(self.path, clean)
 
     def _write_project_file(self, name: str, data: dict[str, Any]) -> None:
@@ -524,14 +724,17 @@ class ConfigStore:
             # Flush in-memory project data to its file just to be safe.
             current = self._data.get("current_project") or DEFAULT_PROJECT_NAME
             self._write_project_file(current, self._data)
-            # Load the target project into live state.
+            # Load the target project into live state. Normalize the MERGED
+            # shape so the default profile is re-checked against the incoming
+            # project's shots, so a `who` naming a subject the new project does
+            # not cover is dropped rather than left dangling.
             with target.open("r", encoding="utf-8") as f:
-                proj = _normalize_project(json.load(f))
-            new_data = {
+                proj = json.load(f)
+            new_data = _normalize_project({
                 **{k: v for k, v in self._data.items() if k in GLOBAL_KEYS},
                 **proj,
                 "current_project": name,
-            }
+            })
             self._data = new_data
             self._write_globals_file(new_data)
             return json.loads(json.dumps(new_data))

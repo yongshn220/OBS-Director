@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 import threading
 import time
 import urllib.error
@@ -9,6 +8,14 @@ import urllib.request
 import uuid
 from collections import deque
 from typing import Any
+
+from .config import (
+    PACE_SECONDS,
+    SCENE_HOLD_S,
+    SUBJECT_WIDE,
+    default_profile,
+    split_subject,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,111 +27,108 @@ def new_rule_id() -> str:
 def default_rule() -> dict[str, Any]:
     return {
         "id": new_rule_id(),
-        "name": "새 룰",
+        "name": "새 장면",
         "priority": 0,
         "enabled": True,
         "conditions": [],          # [] = always match (catch-all)
-        "actions": [],
-        "cooldown_s": 3.0,
+        "profile": default_profile(),
     }
 
 
 def normalize_rule(rule: dict[str, Any]) -> dict[str, Any]:
-    """Ensure the rule has all required fields with valid types.
+    """Ensure a scene has all required fields with valid types.
 
-    Supported action types:
-      - http_request : low-level POST/GET to the ASS HTTP server (escape hatch)
-      - transition   : activate a rotation (deck of macros) while the rule holds
-    Any other action type is dropped silently.
+    A scene says only WHEN it applies and WHO it may cover. How it is shot is
+    one algorithm shared by every scene, so there is nothing else to store.
     """
-    r = {
+    return {
         "id": rule.get("id") or new_rule_id(),
-        "name": str(rule.get("name") or "새 룰"),
+        "name": str(rule.get("name") or "새 장면"),
         "priority": int(rule.get("priority", 0)),
         "enabled": bool(rule.get("enabled", True)),
-        "conditions": [],
-        "actions": [],
-        "cooldown_s": float(rule.get("cooldown_s", 3.0)),
+        "conditions": [
+            {
+                "group": str(c.get("group", "")),
+                "state": "active" if c.get("state") == "active" else "inactive",
+            }
+            for c in (rule.get("conditions") or [])
+        ],
+        "profile": rule.get("profile") if isinstance(rule.get("profile"), dict)
+                   else default_profile(),
     }
-    for c in rule.get("conditions") or []:
-        r["conditions"].append({
-            "group": str(c.get("group", "")),
-            "state": "active" if c.get("state") == "active" else "inactive",
-        })
-    for a in rule.get("actions") or []:
-        t = a.get("type")
-        if t == "http_request":
-            # method/url are stored as "" when omitted so _dispatch can fall
-            # back to connections.ass_http (the simplified UI relies on this).
-            raw_method = (a.get("method") or "").upper().strip()
-            method = raw_method if raw_method in ("GET", "POST") else ""
-            r["actions"].append({
-                "type": "http_request",
-                "method": method,
-                "url": str(a.get("url", "")).strip(),
-                "body": str(a.get("body") or ""),
-            })
-        elif t == "transition":
-            r["actions"].append({
-                "type": "transition",
-                "transition_id": str(a.get("transition_id") or ""),
-            })
-        # unknown action types are dropped silently
-    return r
 
 
 class RuleEngine:
-    """Evaluates rules against group activity each tick and drives output.
+    """Decides what is on air, in two layers.
 
-    Match semantics:
-      - Rules walked in descending priority order.
-      - First enabled rule whose ALL conditions are satisfied is the candidate.
-      - Empty conditions list ⇒ always satisfied (catch-all rule).
-      - Condition: group must currently be in the specified state.
+    SCENE (slow): rules are walked in descending priority; the first enabled
+    rule whose conditions all hold frames the scene, and an empty condition list
+    is a catch-all. A scene holds SCENE_HOLD_S past its conditions so a source
+    that flaps cannot whip the show around. With nothing matching (or in
+    "dynamic" mode, which skips rules) the runtime's default scene applies.
 
-    Switch semantics:
-      - When the candidate differs from the active rule, switch only if
-        `now - active_since >= active_rule.cooldown_s`. Cooldown is always
-        honored; priority only decides which candidate wins among simultaneous
-        matches, never bypasses an in-progress cooldown.
+    SHOT (fast): one algorithm, the same in every scene, built from three rules
+    in priority order:
 
-    Output semantics (per active rule's actions):
-      - http_request : fired once on switch, then re-fired every `refire_s`
-        as a self-healing heartbeat.
-      - transition   : drives a macro rotation. A macro's token is POSTed ONLY
-        when the on-air macro changes — once per draw (on rule activation and
-        each rotation interval), never re-sent in between. With camera_alternate
-        on, draws are two-level: cameras round-robin (each camera once per round,
-        shuffled order, never the on-air camera twice in a row) and the scenes
-        within a camera shuffle as that camera's own card-deck. This guarantees
-        no consecutive same-camera cut and gives every camera equal airtime.
-        interval_s=0 ⇒ a static shot fired exactly once.
-        (http_request actions still use the refire_s heartbeat; transitions do not.)
+      1. Never cut a camera to itself. This is a hard filter, not a penalty —
+         a cut from a camera back to the same camera reads as a glitch rather
+         than an edit, so a candidate that would do it is simply not eligible.
+      2. Visit every live subject. Subjects sit in a rotation queue and go to
+         the back when aired, so airtime is shared instead of chasing whoever
+         is loudest. A subject that rule 1 blocks keeps its place at the front
+         and is picked up on the very next cut.
+      3. Cut on the beat. Shot length is a musical duration — the pace target
+         rounded to a whole number of beats, preferring whole bars — and cuts
+         land on the tracked beat grid. With no beat detected (speech, or a band
+         with no drums) the same target is used as plain seconds.
+
+    Deriving the beat count from a duration rather than fixing it makes pacing
+    immune to the tempo tracker's octave errors: if the reported tempo doubles,
+    the beat count doubles with it and the shot stays the same length.
+
+    Only one thing interrupts the rotation: a subject that was not live at the
+    last cut and has now sustained for INTERRUPT_MIN_ACTIVE_S jumps to the front
+    of the queue and cuts on the next beat rather than the next scheduled cut.
+    That is what puts the pastor on screen when he starts talking, while the
+    sustain requirement keeps a cough or a bumped mic from doing the same.
+
+    A shot's token is POSTed only when the on-air shot CHANGES, never on a
+    timer, so a held frame is never re-triggered.
     """
 
     LOG_MAX = 100
-    DEFAULT_REFIRE_S = 3.0
-    DEFAULT_INTERVAL_S = 8.0
-    # Synthetic rule id used when the operator pins a transition by hand
-    # (runtime.override_transition_id) instead of letting rules choose.
-    OVERRIDE_RULE_ID = "__override__"
-    # Synthetic ids used in "dynamic" director mode, where the deck is built
-    # live from active audio groups instead of a rule picking a transition.
-    DYNAMIC_RULE_ID = "__dynamic__"
-    DYNAMIC_TRANSITION_ID = "__dynamic_trn__"
+    SHOT_RULE_ID = "__shot__"        # operator pinned a single shot
+    DEFAULT_RULE_ID = "__default__"  # no scene matched → runtime default scene
 
-    def __init__(self, config_store):
+    PREVIEW_HORIZON = 5
+    # A newly live subject must sustain this long before it may interrupt.
+    INTERRUPT_MIN_ACTIVE_S = 0.8
+    # ...and no shot is ever cut sooner than this, interrupt or not.
+    MIN_SHOT_S = 2.5
+    # A subject that was on air this recently is not "new" when it comes back.
+    # Without this, a singer who pauses for a breath leaves the active set and
+    # returns as a fresh arrival, so the show cuts away from them and straight
+    # back — twice, for one breath.
+    INTERRUPT_MIN_OFFAIR_S = 8.0
+    # How close to a beat line an interrupting cut must land.
+    ON_BEAT_WINDOW_S = 0.08
+    # Beat counts considered for a shot; multiples of 4 are whole bars and are
+    # preferred, so cuts land on bar lines whenever that is close to the target.
+    BEAT_CHOICES = tuple(range(2, 33, 2))
+    BAR_BONUS = 0.15                 # relative pull toward whole bars
+
+    def __init__(self, config_store, audio=None):
         self.config_store = config_store
+        self.audio = audio           # provides .beat; None in tests
         self.active_rule_id: str | None = None
         self.active_since: float = 0.0
-        # rule_id -> next monotonic time at which an http_request refire fires.
-        self._refire_at: dict[str, float] = {}
-        # Rotation state for the active transition rule, or None. Shape:
-        #   {rule_id, transition_id, deck_remaining[list], current_macro_id,
-        #    current_camera, next_at, refire_at}
-        self._rotation: dict[str, Any] | None = None
-        # Macro id currently held by a manual shot pin (fire once on change).
-        self._held_macro_id: str | None = None
+        # On-air shot: {macro_id, subjects, camera, since, cut_at, cause}
+        self._shot: dict[str, Any] | None = None
+        self._queue: list[str] = []          # rotation order, front = next up
+        self._last_shot_for: dict[str, str] = {}   # subject -> last macro aired
+        self._last_on_air: dict[str, float] = {}   # subject -> when it last aired
+        self._active_at_cut: set[str] = set()
+        self._scene_open: bool = False
         self._action_log: deque[dict[str, Any]] = deque(maxlen=self.LOG_MAX)
 
     # ── Public ────────────────────────────────────────────────────
@@ -133,825 +137,637 @@ class RuleEngine:
              role_states: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         cfg = self.config_store.snapshot()
         runtime = cfg.get("runtime") or {}
-        rules: list[dict[str, Any]] = cfg.get("rules") or []
         dry_run: bool = bool(runtime.get("dry_run", True))
         auto: bool = bool(runtime.get("auto", True))
-        refire_s: float = float(runtime.get("refire_s", self.DEFAULT_REFIRE_S))
-        override_id = runtime.get("override_transition_id") or None
+        override_rule_id = runtime.get("override_rule_id") or None
         override_macro_id = runtime.get("override_macro_id") or None
         director_mode = "dynamic" if runtime.get("director_mode") == "dynamic" else "rules"
-
+        pace = runtime.get("pace") or "normal"
         now = time.monotonic()
 
+        activity = self.activity(group_states, role_states)
+        macro_index = self._macro_index(cfg)
+        beat = self._beat_snapshot(now)
+
         if not auto:
-            if self.active_rule_id is not None:
-                self._release_active()
-            self._held_macro_id = None
-            return {
-                "active_rule_id": None,
-                "active_rule_name": None,
-                "active_macro": None,
-                "override_transition_id": override_id,
-                "override_macro_id": override_macro_id,
-                "director": self._empty_director(),
-                "fired": [],
-                "dry_run": dry_run,
-                "matching": [],
-                "director_mode": director_mode,
-                "reason": "manual",
-            }
+            self._reset()
+            self.active_rule_id = None
+            return self._payload(cfg, None, [], dry_run, director_mode, activity,
+                                 beat, reason="manual")
 
-        # ── Manual shot pin: hold ONE macro, ignore rules + rotation ──
-        if override_macro_id:
-            macro_index = self._macro_index(cfg)
-            macro = macro_index.get(override_macro_id)
-            if macro is not None:
-                fired = []
-                if self._held_macro_id != override_macro_id or self.active_rule_id != "__shot__":
-                    self._rotation = None
-                    self.active_rule_id = "__shot__"
-                    self.active_since = now
-                    self._held_macro_id = override_macro_id
-                    cam = macro.get("camera")
-                    cam_str = f" (cam{cam})" if cam not in (None, "") else ""
-                    action = {"type": "http_request", "method": "", "url": "",
-                              "body": str(macro.get("token") or "")}
-                    fired.append(self._fire(
-                        {"id": "__shot__", "name": "수동 샷"}, action, dry_run, now, "manual",
-                        detail=f"수동 샷 → {macro.get('name') or ''}{cam_str}",
-                        extra={"macro_id": override_macro_id, "macro_name": macro.get("name"),
-                               "camera": cam, "group": macro.get("group"),
-                               "token": macro.get("token")}))
-                director = self._empty_director()
-                director["transition_name"] = "수동 샷"
-                director["current"] = {
-                    "macro_id": override_macro_id, "name": macro.get("name"),
-                    "camera": macro.get("camera"), "group": macro.get("group"),
-                }
-                return {
-                    "active_rule_id": "__shot__", "active_rule_name": "수동 샷",
-                    "active_cooldown_remaining": None, "active_macro": override_macro_id,
-                    "override_transition_id": override_id, "override_macro_id": override_macro_id,
-                    "director": director, "fired": fired, "dry_run": dry_run, "matching": [],
-                    "director_mode": director_mode,
-                }
-            # Pinned macro was deleted → fall through.
-        self._held_macro_id = None
+        if override_macro_id and override_macro_id in macro_index:
+            return self._tick_pinned_shot(macro_index[override_macro_id], now,
+                                          dry_run, director_mode, activity, beat)
 
-        # ── Manual override: force a chosen transition, ignoring rules ──
-        if override_id:
-            forced = next((t for t in (cfg.get("transitions") or [])
-                           if t.get("id") == override_id), None)
-            if forced is not None:
-                fired: list[dict[str, Any]] = []
-                pseudo = {
-                    "id": self.OVERRIDE_RULE_ID, "name": "수동 고정",
-                    "actions": [{"type": "transition", "transition_id": override_id}],
-                }
-                if self.active_rule_id != self.OVERRIDE_RULE_ID:
-                    self.active_since = now
-                self.active_rule_id = self.OVERRIDE_RULE_ID
-                self._tick_rotation(pseudo, forced, cfg, now, dry_run, fired)
-                director = self._build_director(cfg, forced, now)
-                return {
-                    "active_rule_id": self.OVERRIDE_RULE_ID,
-                    "active_rule_name": "수동 고정",
-                    "active_cooldown_remaining": None,
-                    "active_macro": (director["current"] or {}).get("macro_id"),
-                    "override_transition_id": override_id,
-                    "override_macro_id": None,
-                    "director": director,
-                    "fired": fired,
-                    "dry_run": dry_run,
-                    "matching": [],
-                    "director_mode": director_mode,
-                }
-            # Override points to a deleted transition → ignore, run rules.
+        rule, pinned = self._resolve_scene(cfg, activity, now,
+                                           override_rule_id, director_mode)
+        scene_id = rule["id"] if rule else self.DEFAULT_RULE_ID
+        profile = (rule.get("profile") if rule else None) or runtime.get("profile") \
+            or default_profile()
 
-        # Leaving override (pin cleared or gone) → reset so rules re-open cleanly.
-        if self.active_rule_id == self.OVERRIDE_RULE_ID:
-            self._release_active()
+        if self.active_rule_id != scene_id:
+            self.active_rule_id = scene_id
             self.active_since = now
+            self._scene_open = True
 
-        # ── Dynamic mode: build the deck live from active roles/groups ──
+        fired: list[dict[str, Any]] = []
+        self._tick_shot(profile, activity, macro_index, now, pace, beat,
+                        dry_run, fired, rule, self.subject_order(cfg))
+
+        return self._payload(cfg, rule, fired, dry_run, director_mode, activity,
+                             beat, pinned=pinned, now=now, macro_index=macro_index,
+                             profile=profile, pace=pace)
+
+    def recent_log(self, limit: int = 30) -> list[dict[str, Any]]:
+        return list(self._action_log)[-limit:]
+
+    def upcoming(self, profile: dict[str, Any], activity: dict[str, dict[str, Any]],
+                 macro_index: dict[str, dict[str, Any]], n: int,
+                 order: dict[str, int] | None = None) -> list[dict[str, Any]]:
+        """What will actually fire next, continuing the LIVE rotation.
+
+        Seeded from the real state — the rotation queue as it stands, the
+        camera currently on air, and which angle each subject last used — so
+        the first entry is precisely what the next cut will take if the room
+        does not change. Re-derived every tick, so it follows the audio.
+        """
+        eligible = self._eligible(profile, macro_index, order)
+        active = self._active_subjects(eligible, activity)
+        return self._simulate(self._queue, active, eligible,
+                              (self._shot or {}).get("camera"), self._last_shot_for, n)
+
+    def preview_profile(self, cfg: dict[str, Any], profile: dict[str, Any],
+                        activity: dict[str, dict[str, Any]], n: int) -> list[dict[str, Any]]:
+        """The sequence this scene would run if it opened FRESH, against the
+        current activity — for the scene editor, which is asking "what would
+        this scene do", not "what happens next". Starts from nothing on air,
+        which is why it must not reuse the live rotation state."""
+        macro_index = self._macro_index(cfg)
+        eligible = self._eligible(profile, macro_index, self.subject_order(cfg))
+        active = self._active_subjects(eligible, activity)
+        return self._simulate(self._ordered_subjects(eligible), active, eligible,
+                              None, {}, n)
+
+    def _simulate(self, queue: list[str], active: set[str],
+                  eligible: dict[str, list[dict[str, Any]]], last_camera: Any,
+                  last_shot_for: dict[str, str], n: int) -> list[dict[str, Any]]:
+        """Run the draw forward n times without touching live state."""
+        queue = list(queue)
+        last_shot = dict(last_shot_for)
+        out: list[dict[str, Any]] = []
+        for _ in range(n):
+            pick = self._draw(queue, active, eligible, last_camera, last_shot)
+            if pick is None:
+                break
+            subject, macro = pick
+            queue.remove(subject)
+            queue.append(subject)
+            last_shot[subject] = macro["id"]
+            last_camera = macro.get("camera")
+            out.append(self._shot_info(macro) | {"subject": subject})
+        return out
+
+    # ── Scene resolution ──────────────────────────────────────────
+
+    def _resolve_scene(self, cfg: dict[str, Any], activity: dict[str, dict[str, Any]],
+                       now: float, override_rule_id: str | None,
+                       director_mode: str) -> tuple[dict[str, Any] | None, bool]:
+        rules: list[dict[str, Any]] = cfg.get("rules") or []
+
+        if override_rule_id:
+            pinned = next((r for r in rules if r.get("id") == override_rule_id), None)
+            if pinned is not None:
+                return pinned, True   # a pin ignores conditions AND the hold
+
         if director_mode == "dynamic":
-            return self._tick_dynamic(cfg, group_states, role_states, now, dry_run,
-                                      override_id, override_macro_id)
+            return None, False
 
-        # Leaving dynamic mode → reset so rules re-open cleanly.
-        if self.active_rule_id == self.DYNAMIC_RULE_ID:
-            self._release_active()
-            self.active_since = now
+        states = self._match_states(activity)
+        ordered = sorted([r for r in rules if r.get("enabled", True)],
+                         key=lambda r: -int(r.get("priority", 0)))
+        candidate = next((r for r in ordered if self._match(r, states)), None)
+        candidate_id = candidate["id"] if candidate else self.DEFAULT_RULE_ID
+        if candidate_id == self.active_rule_id:
+            return candidate, False
 
-        ordered = sorted(
-            [r for r in rules if r.get("enabled", True)],
-            key=lambda r: (-int(r.get("priority", 0)),),
-        )
-        # A rule condition may name a TEAM (group) or a finer ROLE. Match
-        # against both, with team winning any name collision (back-compat).
-        match_states = {**(role_states or {}), **group_states}
-        matching = [r for r in ordered if self._match(r, match_states)]
-        candidate = matching[0] if matching else None
-        fired: list[dict[str, Any]] = []
+        # The active scene holds the floor for SCENE_HOLD_S. Priority decides
+        # who wins among simultaneous matches; it never cuts the hold short.
+        #
+        # The hold covers the DEFAULT scene as well. Looking the active scene up
+        # in `rules` and bailing out when it is missing quietly exempted the
+        # default one — nothing carries its id — so a scene whose conditions
+        # flickered would bounce rule → default → rule within a second, and each
+        # bounce forced its own cut.
+        #
+        # The length comes from the scene that currently holds the floor, not
+        # from the one trying to take it: it is that scene saying how long it
+        # needs, and it outranks priority for exactly that long.
+        held = next((r for r in rules if r.get("id") == self.active_rule_id), None)
+        if self.active_rule_id is not None \
+                and now - self.active_since < self._scene_hold(cfg, held):
+            return held, False
+        return candidate, False
 
-        # Decide whether to switch.
-        switch_to: dict[str, Any] | None = None
-        if candidate is None:
-            if self.active_rule_id is not None:
-                active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
-                cooldown = float(active_rule.get("cooldown_s", 0.0)) if active_rule else 0.0
-                if now - self.active_since >= cooldown:
-                    self._release_active()
-                    self.active_since = now
-        else:
-            cand_id = candidate["id"]
-            if cand_id != self.active_rule_id:
-                allow = True
-                if self.active_rule_id is not None:
-                    active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
-                    cd = float(active_rule.get("cooldown_s", 0.0)) if active_rule else 0.0
-                    if now - self.active_since < cd:
-                        allow = False
-                if allow:
-                    switch_to = candidate
-
-        if switch_to is not None:
-            if self.active_rule_id is not None and self.active_rule_id != switch_to["id"]:
-                self._refire_at.pop(self.active_rule_id, None)
-            # Don't wipe rotation state here. _tick_rotation re-inits only when
-            # the (rule, transition) actually differs (need_init). Keeping the
-            # prior state lets the SAME rule, after a brief condition flap,
-            # resume its deck + on-air camera memory instead of restarting with
-            # an immediate off-cadence draw that ignores the last camera (which
-            # produced visible same-camera repeats, e.g. cam3 → cam3).
-            self.active_rule_id = switch_to["id"]
-            self.active_since = now
-            for action in switch_to.get("actions", []):
-                if action["type"] == "http_request":
-                    fired.append(self._fire(switch_to, action, dry_run, now, "transition"))
-            if refire_s > 0:
-                self._refire_at[switch_to["id"]] = now + refire_s
-
-        # Drive the active rule's output (http refire + transition rotation).
-        if self.active_rule_id is not None:
-            active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
-            if active_rule is None:
-                # Rule was deleted while active.
-                self._release_active()
-            else:
-                # http_request refire heartbeat
-                if refire_s > 0:
-                    next_at = self._refire_at.get(self.active_rule_id)
-                    if next_at is None:
-                        self._refire_at[self.active_rule_id] = now + refire_s
-                    elif now >= next_at:
-                        for action in active_rule.get("actions", []):
-                            if action["type"] == "http_request":
-                                fired.append(self._fire(active_rule, action, dry_run, now, "refire"))
-                        self._refire_at[self.active_rule_id] = now + refire_s
-
-                # transition rotation
-                transition = self._resolve_transition(cfg, active_rule)
-                if transition is not None:
-                    self._tick_rotation(active_rule, transition, cfg, now, dry_run, fired)
-                else:
-                    self._rotation = None
-
-        active_name = None
-        active_rule_cooldown_remaining = None
-        if self.active_rule_id is not None:
-            active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
-            if active_rule:
-                active_name = active_rule.get("name")
-                cd = float(active_rule.get("cooldown_s", 0.0))
-                active_rule_cooldown_remaining = max(0.0, cd - (now - self.active_since))
-
-        queue: list[dict[str, Any]] = []
-        for r in matching:
-            queue.append({
-                "id": r["id"],
-                "name": r.get("name"),
-                "priority": int(r.get("priority", 0)),
-                "is_active": r["id"] == self.active_rule_id,
-                "preview": self._next_action_preview(cfg, r),
-            })
-
-        # ── Live "Director" info for the active transition rotation ──
-        director = self._empty_director()
-        rot = self._rotation
-        if (self.active_rule_id is not None and rot
-                and rot.get("rule_id") == self.active_rule_id):
-            active_rule = next((r for r in rules if r["id"] == self.active_rule_id), None)
-            transition = self._resolve_transition(cfg, active_rule) if active_rule else None
-            if transition is not None:
-                director = self._build_director(cfg, transition, now)
-
-        return {
-            "active_rule_id": self.active_rule_id,
-            "active_rule_name": active_name,
-            "active_cooldown_remaining": (
-                round(active_rule_cooldown_remaining, 2)
-                if active_rule_cooldown_remaining is not None else None
-            ),
-            "active_macro": (director["current"] or {}).get("macro_id"),
-            "override_transition_id": None,
-            "override_macro_id": None,
-            "director": director,
-            "fired": fired,
-            "dry_run": dry_run,
-            "matching": queue,
-            "director_mode": director_mode,
-        }
-
-    # ── Dynamic mode: live deck from active audio groups ──────────────
-
-    def _build_dynamic_transition(
-        self, cfg: dict[str, Any], group_states: dict[str, dict[str, Any]],
-        role_states: dict[str, dict[str, Any]] | None = None,
-    ) -> tuple[dict[str, Any], list[str]]:
-        """Synthesize a transition on the fly: its deck is every macro whose
-        `sources` intersects the currently-active ROLES or GROUPS. A macro's
-        sources may name fine roles (e.g. "Singer Choi") and/or coarse groups
-        (e.g. "singers"); a role source surfaces the shot only when that role's
-        channel is live, a group source whenever any member is live. Feeding
-        this to the same rotation engine reuses camera round-robin, group-
-        alternate, the Director preview, and the smooth glide-on-change — the
-        deck changes under a STABLE id, so a set change never hard-resets."""
-        active_roles = {r for r, st in (role_states or {}).items() if st and st.get("active")}
-        active_groups = {g for g, st in (group_states or {}).items() if st and st.get("active")}
-        active = active_roles | active_groups
-        deck = [
-            m["id"] for m in (cfg.get("macros") or [])
-            if m.get("id") and (set(m.get("sources") or []) & active)
-        ]
-        dyn = (cfg.get("runtime") or {}).get("dynamic") or {}
+    @staticmethod
+    def _scene_hold(cfg: dict[str, Any], rule: dict[str, Any] | None) -> float:
+        """How long the scene now on the floor must keep it."""
+        profile = (rule or {}).get("profile") \
+            or (cfg.get("runtime") or {}).get("profile") or {}
         try:
-            interval = float(dyn.get("interval_s", self.DEFAULT_INTERVAL_S))
+            return max(0.0, float(profile.get("hold_s", SCENE_HOLD_S)))
         except (TypeError, ValueError):
-            interval = self.DEFAULT_INTERVAL_S
-        transition = {
-            "id": self.DYNAMIC_TRANSITION_ID,
-            "name": "자동 플래닝",
-            "deck": deck,
-            "interval_s": interval,
-            "camera_alternate": True,           # rotating cameras is the point
-            "camera_weights": {},               # equal airtime per camera
-            "group_alternate": bool(dyn.get("group_alternate", True)),
-        }
-        # Label the HUD with the active sources actually driving shots — roles
-        # first (fine), then any active groups, deduped.
-        labels = sorted(active_roles) + [g for g in sorted(active_groups) if g not in active_roles]
-        return transition, labels
+            return SCENE_HOLD_S
 
-    def _tick_dynamic(self, cfg: dict[str, Any], group_states: dict[str, dict[str, Any]],
-                      role_states: dict[str, dict[str, Any]] | None,
-                      now: float, dry_run: bool,
-                      override_id: str | None, override_macro_id: str | None) -> dict[str, Any]:
-        transition, active_sources = self._build_dynamic_transition(cfg, group_states, role_states)
-        deck = transition.get("deck") or []
-        fired: list[dict[str, Any]] = []
-        pseudo = {
-            "id": self.DYNAMIC_RULE_ID, "name": "자동 플래닝",
-            "actions": [{"type": "transition", "transition_id": self.DYNAMIC_TRANSITION_ID}],
-        }
-        # Entering dynamic mode (from rules/override/paused) → drop stale rotation
-        # so we open cleanly on the first active shot.
-        if self.active_rule_id != self.DYNAMIC_RULE_ID:
-            self._rotation = None
-            self.active_since = now
-        self.active_rule_id = self.DYNAMIC_RULE_ID
+    @staticmethod
+    def _match_states(activity: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Conditions name a bare TEAM or ROLE, not a subject key. Teams are
+        applied last so a team wins any name collision."""
+        states: dict[str, dict[str, Any]] = {}
+        for wanted in ("role", "team"):
+            for key, st in activity.items():
+                kind, name = split_subject(key)
+                if kind == wanted:
+                    states[name] = st
+        return states
 
-        if deck:
-            # Same synthetic transition id every tick ⇒ _tick_rotation.need_init
-            # stays False as the deck shifts ⇒ current shot holds until its
-            # interval, then the next draw uses the new active set (glide).
-            self._tick_rotation(pseudo, transition, cfg, now, dry_run, fired)
-            director = self._build_director(cfg, transition, now)
-        else:
-            # Nothing active → HOLD the last on-air shot (fire nothing) and keep
-            # rotation frozen so re-activation cuts promptly rather than waiting a
-            # full interval. The HUD still shows the held shot as current.
-            director = self._empty_director()
-            director["transition_id"] = self.DYNAMIC_TRANSITION_ID
-            director["transition_name"] = "자동 플래닝"
-            rot = self._rotation
-            if rot and rot.get("rule_id") == self.DYNAMIC_RULE_ID:
-                cur = self._macro_index(cfg).get(rot.get("current_macro_id"))
-                if cur is not None:
-                    director["current"] = {
-                        "macro_id": cur["id"], "name": cur.get("name"),
-                        "camera": cur.get("camera"), "group": cur.get("group"),
-                    }
-        director["mode"] = "dynamic"
-        director["active_sources"] = active_sources
+    @staticmethod
+    def _match(rule: dict[str, Any], states: dict[str, dict[str, Any]]) -> bool:
+        conditions = rule.get("conditions") or []
+        if not conditions:
+            return True  # catch-all
+        for cond in conditions:
+            st = states.get(cond.get("group"))
+            if st is None:
+                return False
+            if bool(st.get("active")) != (cond.get("state") == "active"):
+                return False
+        return True
+
+    # ── Activity ──────────────────────────────────────────────────
+
+    def activity(self, group_states: dict[str, dict[str, Any]],
+                 role_states: dict[str, dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+        """Flatten both taxonomy levels into one subject-keyed table."""
+        out: dict[str, dict[str, Any]] = {}
+        for prefix, table in (("role", role_states), ("team", group_states)):
+            for name, st in (table or {}).items():
+                out[f"{prefix}:{name}"] = {
+                    "active": bool(st.get("active")),
+                    "active_for": float(st.get("active_for") or 0.0),
+                    "peak_db": st.get("peak_db"),
+                }
+        return out
+
+    # ── Shot layer ────────────────────────────────────────────────
+
+    def _reset(self) -> None:
+        self._shot = None
+        self._scene_open = False
+        self._queue = []
+        self._last_on_air = {}
+
+    @staticmethod
+    def _firable(macro: dict[str, Any]) -> bool:
+        """A shot with no token sends nothing, so airing it would leave the
+        previous camera up while every readout claims we cut."""
+        return bool((macro.get("token") or "").strip())
+
+    @staticmethod
+    def subject_order(cfg: dict[str, Any]) -> dict[str, int]:
+        """Rank every subject by the order the operator arranged it in setup.
+
+        The rotation seeds itself from this, so "reorder the roles" and "change
+        who comes first on screen" are the same action. Without it the seed
+        order fell out of whatever order the SHOTS happened to be in, which is
+        not something anyone arranges deliberately.
+        """
+        groups = cfg.get("groups") or {}
+        roles = cfg.get("roles") or {}
+        keys = [SUBJECT_WIDE]
+        for g in groups:
+            keys.append(f"team:{g}")
+            keys += [f"role:{r}" for r, m in roles.items() if (m or {}).get("group") == g]
+        keys += [f"role:{r}" for r, m in roles.items()
+                 if (m or {}).get("group") not in groups]
+        return {k: i for i, k in enumerate(keys)}
+
+    def _eligible(self, profile: dict[str, Any],
+                  macro_index: dict[str, dict[str, Any]],
+                  order: dict[str, int] | None = None) -> dict[str, list[dict[str, Any]]]:
+        """subject -> its usable shots for this scene.
+
+        Two independent filters: `who` limits which subjects may appear, and
+        `cameras` limits which cameras the whole scene may use. Either being
+        empty means "no limit". A subject left with no shot after filtering is
+        dropped rather than kept empty, so it never takes a slot in the
+        rotation that it cannot fill.
+        """
+        who = set(profile.get("who") or ())
+        cams = set(profile.get("cameras") or ())
+        out: dict[str, list[dict[str, Any]]] = {}
+        for m in macro_index.values():
+            if not self._firable(m):
+                continue
+            cam = "" if m.get("camera") is None else str(m["camera"])
+            if cams and cam not in cams:
+                continue
+            for s in (m.get("subjects") or []):
+                if who and s not in who:
+                    continue
+                out.setdefault(s, []).append(m)
+        if order:
+            # Unknown subjects (a shot pointing at a deleted role) sort last
+            # rather than disappearing, so they stay visible as a problem.
+            out = {k: out[k] for k in sorted(out, key=lambda x: order.get(x, 1 << 20))}
+        return out
+
+    @staticmethod
+    def _active_subjects(eligible: dict[str, list[dict[str, Any]]],
+                         activity: dict[str, dict[str, Any]]) -> set[str]:
+        """Subjects that may be cut to right now.
+
+        WIDE counts as always live: it is a framing, not a person, so there is
+        nothing for it to be quiet about — and it is what keeps the rotation
+        from emptying when the room goes silent.
+        """
+        live = {s for s in eligible
+                if s == SUBJECT_WIDE or (activity.get(s) or {}).get("active")}
+        return live
+
+    @staticmethod
+    def _ordered_subjects(eligible: dict[str, list[dict[str, Any]]]) -> list[str]:
+        """Stable seed order for the queue: shots come out of the library in a
+        fixed order, so a fresh queue is reproducible rather than arbitrary."""
+        return list(eligible.keys())
+
+    def _sync_queue(self, eligible: dict[str, list[dict[str, Any]]]) -> None:
+        """Keep the rotation in step with the scene without disturbing it.
+
+        Subjects are appended and removed in place rather than rebuilt, so a
+        scene change or a re-assignment does not reset whose turn it is — the
+        rotation is the only memory of who has and has not been on screen.
+        """
+        known = set(self._queue)
+        for s in self._ordered_subjects(eligible):
+            if s not in known:
+                self._queue.append(s)
+        self._queue = [s for s in self._queue if s in eligible]
+
+    def _tick_shot(self, profile: dict[str, Any], activity: dict[str, dict[str, Any]],
+                   macro_index: dict[str, dict[str, Any]], now: float, pace: str,
+                   beat: dict[str, Any], dry_run: bool,
+                   fired: list[dict[str, Any]], rule: dict[str, Any] | None,
+                   order: dict[str, int]) -> None:
+        eligible = self._eligible(profile, macro_index, order)
+        self._sync_queue(eligible)
+        active = self._active_subjects(eligible, activity)
+        if not active:
+            return   # nothing shootable → hold the frame rather than cut to black
+
+        cause = self._cut_due(now, pace, beat, activity, active, eligible)
+        if cause is None:
+            return
+
+        # An interrupting subject goes to the front so the cut lands on them.
+        if cause == "interrupt":
+            newly = self._newly_sustained(activity, active, now)
+            if newly and newly in self._queue:
+                self._queue.remove(newly)
+                self._queue.insert(0, newly)
+
+        last_cam = (self._shot or {}).get("camera")
+        pick = self._draw(self._queue, active, eligible, last_cam, self._last_shot_for)
+        if pick is None:
+            return   # every live subject is blocked by the camera rule → hold
+        subject, macro = pick
+        self._queue.remove(subject)
+        self._queue.append(subject)
+        self._last_shot_for[subject] = macro["id"]
+        self._commit(macro, subject, now, pace, beat, dry_run, fired, rule, cause)
+        self._active_at_cut = set(active)
+
+    def _draw(self, queue: list[str], active: set[str],
+              eligible: dict[str, list[dict[str, Any]]], last_camera: Any,
+              last_shot_for: dict[str, str]) -> tuple[str, dict[str, Any]] | None:
+        """First subject in the queue that is live AND has a shot on a camera
+        other than the one on air. Subjects failing either test are stepped over
+        WITHOUT losing their place, so the camera rule delays a subject by one
+        cut rather than costing them their turn."""
+        for subject in queue:
+            if subject not in active:
+                continue
+            shots = [m for m in eligible.get(subject, ())
+                     if last_camera is None or m.get("camera") != last_camera]
+            if not shots:
+                continue
+            # Within a subject, the angle that has been off screen longest.
+            last = last_shot_for.get(subject)
+            fresh = [m for m in shots if m["id"] != last]
+            return subject, (fresh or shots)[0]
+        return None
+
+    @staticmethod
+    def _shot_allowed(shot: dict[str, Any], active: set[str],
+                      eligible: dict[str, list[dict[str, Any]]]) -> bool:
+        """Is the on-air frame still a legal choice — right subject list, right
+        cameras, and its subject still making sound?"""
+        mid = shot.get("macro_id")
+        return any(m["id"] == mid for s in active for m in eligible.get(s, ()))
+
+    def _newly_sustained(self, activity: dict[str, dict[str, Any]],
+                         active: set[str], now: float) -> str | None:
+        """A subject worth interrupting for: not live at the last cut, up long
+        enough to be real rather than a blip, and not one we were just showing.
+
+        The last clause is what separates "someone new started" from "someone
+        paused for a breath". Both look identical in the active set — the
+        subject disappears and comes back — so without the off-air test the
+        show cuts away from a singer and immediately back to them.
+        """
+        for s in active - self._active_at_cut:
+            st = activity.get(s) or {}
+            if float(st.get("active_for", 0.0)) < self.INTERRUPT_MIN_ACTIVE_S:
+                continue
+            last = self._last_on_air.get(s)
+            if last is not None and now - last < self.INTERRUPT_MIN_OFFAIR_S:
+                continue
+            return s
+        return None
+
+    # ── Cut timing ────────────────────────────────────────────────
+
+    def _beats_for(self, target_s: float, period: float) -> int:
+        """Whole beats closest to the pace target, preferring whole bars."""
+        return min(
+            self.BEAT_CHOICES,
+            key=lambda b: abs(b * period - target_s) + (self.BAR_BONUS * target_s if b % 4 else 0.0),
+        )
+
+    def _cut_due(self, now: float, pace: str, beat: dict[str, Any],
+                 activity: dict[str, dict[str, Any]], active: set[str],
+                 eligible: dict[str, list[dict[str, Any]]]) -> str | None:
+        if self._shot is None:
+            return "open"
+
+        # A scene change forces a cut only when the frame it inherited is no
+        # longer allowed. Cutting on every change meant a scene that merely
+        # flickered threw away a perfectly good shot — and since the flicker
+        # came back a beat later, the show cut twice in under a second and the
+        # camera before the flicker returned looking like a repeat.
+        if self._scene_open:
+            if self._shot_allowed(self._shot, active, eligible):
+                self._scene_open = False        # nothing to do; keep rolling
+            elif now - self._shot["since"] < self.MIN_SHOT_S:
+                return None                     # the floor binds here too
+            else:
+                return "open"
+
+        cut_at = self._shot.get("cut_at")
+        if cut_at is not None and now >= cut_at:
+            return "cadence"
+        # Someone new came up mid-shot: take the next beat rather than waiting
+        # out the rest of this shot. The floor stops an interrupt from cutting
+        # a frame that has barely been up.
+        if now - self._shot["since"] >= self.MIN_SHOT_S \
+                and self._newly_sustained(activity, active, now) \
+                and self._on_beat(beat, now):
+            return "interrupt"
+        return None
+
+    def _schedule(self, now: float, pace: str, beat: dict[str, Any],
+                  macro: dict[str, Any]) -> tuple[float, int | None]:
+        """When the shot just taken should end, and over how many beats.
+
+        The grid point is taken from HALF a span ahead, not from `now`. The
+        tempo tracker keeps re-estimating, so its phase drifts a little; asking
+        for "the next grid point after now" can therefore return one only
+        milliseconds away — which fires a second cut immediately after the one
+        we just made. Aiming half a span out puts the answer in (0.5, 1.5]
+        spans, absorbing any drift while keeping the average on target.
+        """
+        target = PACE_SECONDS.get(pace, PACE_SECONDS["normal"])
+        period = beat.get("period")
+        if beat.get("locked") and period:
+            beats = self._beats_for(target, period)
+            span = beats * period
+            grid = self._next_grid(beat, now + span * 0.5, beats)
+            if grid is not None:
+                return grid, beats
+        return now + target, None
+
+    def _on_beat(self, beat: dict[str, Any], now: float) -> bool:
+        """True just after a beat line. Used to place an interrupting cut on
+        the music instead of wherever the trigger happened to land."""
+        period = beat.get("period")
+        if not beat.get("locked") or not period:
+            return True   # no beat to wait for — cut straight away
+        nxt = self._next_grid(beat, now, 1)
+        if nxt is None:
+            return True
+        return (now - (nxt - period)) <= self.ON_BEAT_WINDOW_S
+
+    def _next_grid(self, beat: dict[str, Any], after: float, beats: int) -> float | None:
+        tracker = getattr(self.audio, "beat", None) if self.audio else None
+        if tracker is None or not beat.get("locked"):
+            return None
+        return tracker.next_grid_after(after, beats)
+
+    def _beat_snapshot(self, now: float) -> dict[str, Any]:
+        tracker = getattr(self.audio, "beat", None) if self.audio else None
+        if tracker is None:
+            return {"locked": False, "bpm": None, "confidence": 0.0,
+                    "period": None, "onsets": 0}
+        return tracker.snapshot(now)
+
+    # ── Committing a shot ─────────────────────────────────────────
+
+    def _commit(self, macro: dict[str, Any], subject: str, now: float, pace: str,
+                beat: dict[str, Any], dry_run: bool, fired: list[dict[str, Any]],
+                rule: dict[str, Any] | None, cause: str) -> None:
+        cut_at, beats = self._schedule(now, pace, beat, macro)
+        self._shot = {
+            "macro_id": macro["id"],
+            "subject": subject,
+            "subjects": macro.get("subjects") or [],
+            "camera": macro.get("camera"),
+            "since": now,
+            "cut_at": cut_at,
+            "beats": beats,
+            "cause": cause,
+        }
+        self._scene_open = False
+        for s in {subject, *(macro.get("subjects") or [])}:
+            if s:
+                self._last_on_air[s] = now
+        fired.append(self._fire_macro(rule, macro, dry_run, now, cause))
+
+    # ── Payload ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _shot_info(macro: dict[str, Any]) -> dict[str, Any]:
         return {
-            "active_rule_id": self.DYNAMIC_RULE_ID,
-            "active_rule_name": "자동 플래닝",
-            "active_cooldown_remaining": None,
-            "active_macro": (director.get("current") or {}).get("macro_id"),
-            "override_transition_id": override_id,
-            "override_macro_id": override_macro_id,
-            "director": director,
-            "fired": fired,
-            "dry_run": dry_run,
-            "matching": [],
-            "director_mode": "dynamic",
+            "macro_id": macro["id"],
+            "name": macro.get("name"),
+            "camera": macro.get("camera"),
+            "subjects": macro.get("subjects") or [],
         }
 
     @staticmethod
     def _empty_director() -> dict[str, Any]:
         return {
-            "transition_id": None, "transition_name": None,
-            "current": None, "upcoming": [],
-            "next_in": None, "interval": None,
+            "scene_id": None, "scene_name": None, "current": None, "upcoming": [],
+            "next_in": None, "interval": None, "active_subjects": [],
+            "queue": [], "cause": None, "beats": None, "held": False,
+            "hold_s": None, "hold_left": None,
         }
 
-    def _build_director(self, cfg: dict[str, Any], transition: dict[str, Any],
-                        now: float) -> dict[str, Any]:
-        """Live Director payload from the current rotation state + transition."""
-        d = self._empty_director()
-        rot = self._rotation
-        if not rot or transition is None:
-            return d
-        macro_index = self._macro_index(cfg)
-        cur_id = rot.get("current_macro_id")
-        cur = macro_index.get(cur_id) if cur_id else None
-        d["transition_id"] = transition.get("id")
-        d["transition_name"] = transition.get("name")
-        if cur is not None:
-            d["current"] = {
-                "macro_id": cur_id, "name": cur.get("name"),
-                "camera": cur.get("camera"), "group": cur.get("group"),
-            }
-        d["upcoming"] = self._predict(rot, transition, macro_index, 5)
-        d["interval"] = round(float(transition.get("interval_s", self.DEFAULT_INTERVAL_S)), 2)
-        nxt = rot.get("next_at")
-        if nxt is not None and nxt != float("inf"):
-            d["next_in"] = round(max(0.0, nxt - now), 2)
-        return d
-
-    def recent_log(self, limit: int = 30) -> list[dict[str, Any]]:
-        return list(self._action_log)[-limit:]
-
-    def fire_manual(self, rule_id: str) -> dict[str, Any]:
-        """Fire a rule's actions immediately, ignoring its conditions (for the
-        UI "Run" test button). Honors dry_run; does NOT touch engine state.
-        For a transition action, fires the first valid macro's token once."""
-        cfg = self.config_store.snapshot()
-        rule = next((r for r in (cfg.get("rules") or []) if r["id"] == rule_id), None)
-        if rule is None:
-            raise KeyError(rule_id)
-        dry_run = bool((cfg.get("runtime") or {}).get("dry_run", True))
-        now = time.monotonic()
+    def _tick_pinned_shot(self, macro: dict[str, Any], now: float, dry_run: bool,
+                          director_mode: str, activity: dict[str, dict[str, Any]],
+                          beat: dict[str, Any]) -> dict[str, Any]:
         fired: list[dict[str, Any]] = []
-        macro_index = self._macro_index(cfg)
-        for action in rule.get("actions", []):
-            if action["type"] == "http_request":
-                fired.append(self._fire(rule, action, dry_run, now, cause="manual"))
-            elif action["type"] == "transition":
-                transition = self._resolve_transition(cfg, rule)
-                if transition is None:
-                    continue
-                macro = next(
-                    (macro_index[mid] for mid in transition.get("deck", []) if mid in macro_index),
-                    None,
-                )
-                if macro is not None:
-                    fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "manual"))
-        return {"rule_id": rule_id, "rule_name": rule.get("name"), "fired": fired, "dry_run": dry_run}
+        if self.active_rule_id != self.SHOT_RULE_ID or not self._shot \
+                or self._shot["macro_id"] != macro["id"]:
+            self.active_rule_id = self.SHOT_RULE_ID
+            self.active_since = now
+            self._shot = {
+                "macro_id": macro["id"], "subject": None,
+                "subjects": macro.get("subjects") or [], "camera": macro.get("camera"),
+                "since": now, "cut_at": None, "beats": None, "cause": "manual",
+            }
+            fired.append(self._fire_macro({"id": self.SHOT_RULE_ID, "name": "수동 샷"},
+                                          macro, dry_run, now, "manual"))
+        director = self._empty_director() | {
+            "scene_id": self.SHOT_RULE_ID, "scene_name": "수동 샷",
+            "current": self._shot_info(macro), "held": True, "cause": "manual",
+            "active_subjects": sorted(s for s, st in activity.items() if st["active"]),
+        }
+        return {
+            "active_rule_id": self.SHOT_RULE_ID, "active_rule_name": "수동 샷",
+            "active_macro": macro["id"], "override_rule_id": None,
+            "override_macro_id": macro["id"], "director": director, "fired": fired,
+            "dry_run": dry_run, "matching": [], "director_mode": director_mode,
+            "pinned": False, "beat": beat,
+        }
 
-    # ── Internal: state ───────────────────────────────────────────
+    def _payload(self, cfg: dict[str, Any], rule: dict[str, Any] | None,
+                 fired: list[dict[str, Any]], dry_run: bool, director_mode: str,
+                 activity: dict[str, dict[str, Any]], beat: dict[str, Any],
+                 pinned: bool = False, reason: str | None = None,
+                 now: float | None = None,
+                 macro_index: dict[str, dict[str, Any]] | None = None,
+                 profile: dict[str, Any] | None = None,
+                 pace: str = "normal") -> dict[str, Any]:
+        director = self._empty_director()
+        director["active_subjects"] = sorted(s for s, st in activity.items() if st["active"])
+        scene_name = (rule.get("name") or "(이름 없음)") if rule else "기본 장면"
 
-    def _release_active(self) -> None:
-        # Note: rotation state is intentionally NOT cleared here. If the same
-        # rule re-activates after a brief condition flap, it resumes its deck
-        # and on-air camera memory (see _tick_rotation.need_init). A genuinely
-        # different rule/transition re-inits on its own; a non-transition rule
-        # clears rotation in the tick() drive block.
-        if self.active_rule_id is not None:
-            self._refire_at.pop(self.active_rule_id, None)
-        self.active_rule_id = None
+        if profile is not None and now is not None:
+            macro_index = macro_index or self._macro_index(cfg)
+            director |= {
+                "scene_id": rule["id"] if rule else self.DEFAULT_RULE_ID,
+                "scene_name": scene_name,
+                "queue": list(self._queue),
+                "hold_s": round(float((profile or {}).get("hold_s", SCENE_HOLD_S)), 1),
+                "hold_left": round(max(0.0, float((profile or {}).get("hold_s", SCENE_HOLD_S))
+                                       - (now - self.active_since)), 1),
+            }
+            shot = self._shot
+            if shot and shot["macro_id"] in macro_index:
+                macro = macro_index[shot["macro_id"]]
+                cut_at = shot.get("cut_at")
+                director |= {
+                    "current": self._shot_info(macro) | {"subject": shot.get("subject")},
+                    "cause": shot.get("cause"),
+                    "beats": shot.get("beats"),
+                    "interval": (round(cut_at - shot["since"], 2) if cut_at else None),
+                    "next_in": (round(max(0.0, cut_at - now), 2) if cut_at else None),
+                }
+                director["upcoming"] = self.upcoming(
+                    profile, activity, macro_index, self.PREVIEW_HORIZON,
+                    self.subject_order(cfg))
 
-    def _match(self, rule: dict[str, Any], group_states: dict[str, dict[str, Any]]) -> bool:
-        conditions = rule.get("conditions") or []
-        if not conditions:
-            return True  # catch-all
-        for cond in conditions:
-            group = cond.get("group")
-            want_active = cond.get("state") == "active"
-            g = group_states.get(group)
-            if g is None:
-                return False
-            if bool(g.get("active")) != want_active:
-                return False
-        return True
+        return {
+            "active_rule_id": self.active_rule_id,
+            "active_rule_name": (scene_name if profile is not None else None),
+            "active_macro": (self._shot or {}).get("macro_id"),
+            "override_rule_id": rule["id"] if (rule and pinned) else None,
+            "override_macro_id": None,
+            "director": director,
+            "fired": fired,
+            "dry_run": dry_run,
+            "matching": self._matching_preview(cfg.get("rules") or [], activity),
+            "director_mode": director_mode,
+            "pinned": pinned,
+            "reason": reason,
+            "beat": beat,
+            "pace": pace,
+        }
 
-    # ── Internal: transitions / rotation ──────────────────────────
+    def _matching_preview(self, rules: list[dict[str, Any]],
+                          activity: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        states = self._match_states(activity)
+        out = []
+        for r in sorted([r for r in rules if r.get("enabled", True)],
+                        key=lambda r: -int(r.get("priority", 0))):
+            if not self._match(r, states):
+                continue
+            who = (r.get("profile") or {}).get("who") or []
+            out.append({
+                "id": r["id"], "name": r.get("name"),
+                "priority": int(r.get("priority", 0)),
+                "is_active": r["id"] == self.active_rule_id,
+                "preview": f"대상 {len(who)}개" if who else "전체",
+            })
+        return out
 
-    @staticmethod
-    def _resolve_transition(cfg: dict[str, Any], rule: dict[str, Any]) -> dict[str, Any] | None:
-        tid = None
-        for a in rule.get("actions", []):
-            if a.get("type") == "transition" and a.get("transition_id"):
-                tid = a["transition_id"]
-                break
-        if not tid:
-            return None
-        for t in cfg.get("transitions") or []:
-            if t.get("id") == tid:
-                return t
-        return None
+    # ── Firing / dispatch ─────────────────────────────────────────
 
     @staticmethod
     def _macro_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return {m["id"]: m for m in (cfg.get("macros") or []) if m.get("id")}
 
-    def _interval(self, transition: dict[str, Any]) -> float:
-        try:
-            base = float(transition.get("interval_s", self.DEFAULT_INTERVAL_S))
-        except (TypeError, ValueError):
-            base = self.DEFAULT_INTERVAL_S
-        if base <= 0:
-            return 0.0  # 0 ⇒ no rotation (static single shot)
-        return max(0.5, base)
-
-    @staticmethod
-    def _camera_weights(transition: dict[str, Any], cams: list[Any]) -> dict[Any, int]:
-        """Per-camera weight = how many times a camera appears in one rotation
-        round. Lets a camera with many scenes get proportionally more airtime
-        than a single-scene camera. Defaults to 1 (equal round-robin)."""
-        raw = transition.get("camera_weights") or {}
-        out: dict[Any, int] = {}
-        for c in cams:
-            w = raw.get(str(c), raw.get(c, 1))
-            try:
-                w = int(w)
-            except (TypeError, ValueError):
-                w = 1
-            out[c] = max(1, w)
-        return out
-
-    @staticmethod
-    def _build_camera_round(weights: dict[Any, int], prev_cam: Any,
-                            rng: random.Random | Any) -> list[Any]:
-        """Arrange one round: each camera appears `weight` times, ordered so no
-        two consecutive cameras are the same (and the first differs from the
-        previous round's last) whenever that is combinatorially possible —
-        always drawing from the camera with the most slots left. Falls back to
-        a repeat only when a camera's weight exceeds what the rest can separate."""
-        remaining = {c: n for c, n in weights.items() if n > 0}
-        seq: list[Any] = []
-        last = prev_cam
-        total = sum(remaining.values())
-        for _ in range(total):
-            cands = [c for c in remaining if remaining[c] > 0 and c != last]
-            if not cands:
-                cands = [c for c in remaining if remaining[c] > 0]
-            if not cands:
-                break
-            maxn = max(remaining[c] for c in cands)
-            top = [c for c in cands if remaining[c] == maxn]
-            pick = rng.choice(top)
-            seq.append(pick)
-            remaining[pick] -= 1
-            last = pick
-        return seq
-
-    @staticmethod
-    def _camera_order(deck: list[str], macro_index: dict[str, dict[str, Any]]) -> list[Any]:
-        """Distinct cameras present in the deck, in order of first appearance."""
-        seen: set[Any] = set()
-        cams: list[Any] = []
-        for mid in deck:
-            c = macro_index[mid].get("camera")
-            if c not in seen:
-                seen.add(c)
-                cams.append(c)
-        return cams
-
-    def _draw_opening(self, rot: dict[str, Any], transition: dict[str, Any],
-                      macro_index: dict[str, dict[str, Any]],
-                      rng: random.Random | Any = random) -> dict[str, Any] | None:
-        """Open a transition on its DESIGNATED first screen — the first macro
-        in the deck — so a rule change cuts to a recognizable establishing shot
-        rather than a random one. Then prime the bags so rotation continues
-        cleanly (the opening camera won't immediately repeat)."""
-        deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
-        if not deck:
-            return None
-        first = deck[0]
-        macro = macro_index[first]
+    def _fire_macro(self, rule: dict[str, Any] | None, macro: dict[str, Any],
+                    dry_run: bool, now: float, cause: str) -> dict[str, Any]:
+        token = str(macro.get("token") or "")
         cam = macro.get("camera")
-        if not transition.get("camera_alternate", True):
-            rest = [m for m in deck if m != first]
-            rng.shuffle(rest)
-            rot["flat_bag"] = rest
-            rot["scene_bags"] = {}
-            rot["cam_bag"] = []
-        else:
-            cam_scenes = [m for m in deck if macro_index[m].get("camera") == cam and m != first]
-            rng.shuffle(cam_scenes)
-            rot["scene_bags"] = {cam: cam_scenes}
-            rot["cam_bag"] = []
-            rot["flat_bag"] = []
-        rot["current_macro_id"] = first
-        rot["current_camera"] = cam
-        # Commit the first post-opening round so the Director preview is exact.
-        self._commit_next_round(rot, transition, macro_index, rng)
-        return macro
-
-    PREVIEW_HORIZON = 5
-
-    def _commit_next_round(self, rot: dict[str, Any], transition: dict[str, Any],
-                           macro_index: dict[str, dict[str, Any]],
-                           rng: random.Random | Any) -> None:
-        """Eager-commit several rounds ahead — the camera round-robin order plus
-        the committed scene order for every camera occurrence — so the upcoming
-        sequence is exactly predictable for the whole Director horizon (what
-        _predict shows is what will fire), not just the immediate next shot."""
-        if not transition.get("camera_alternate", True):
-            return
-        deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
-        deck_set = set(deck)
-        cams = self._camera_order(deck, macro_index)
-        if not cams:
-            return
-
-        # Camera buffer: top up by whole weighted rounds so the full preview
-        # horizon is committed. Each appended round avoids repeating the prior
-        # camera at its boundary.
-        weights = self._camera_weights(transition, cams)
-        round_len = max(1, sum(weights.values()))
-        cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
-        buffer_len = max(2 * round_len, self.PREVIEW_HORIZON + 1)
-        last = cam_bag[-1] if cam_bag else rot.get("current_camera")
-        while len(cam_bag) < buffer_len:
-            nb = self._build_camera_round(weights, last, rng)
-            if not nb:
-                break
-            cam_bag.extend(nb)
-            last = nb[-1]
-
-        # Scene buffers: each camera needs as many committed scenes as it occurs
-        # in the camera buffer; extend by reshuffled full cycles (card-deck).
-        from collections import Counter
-        need = Counter(cam_bag)
-        scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
-        for c, k in need.items():
-            cb = [mid for mid in (scene_bags.get(c) or [])
-                  if mid in deck_set and macro_index[mid].get("camera") == c]
-            cam_scenes = [mid for mid in deck if macro_index[mid].get("camera") == c]
-            if not cam_scenes:
-                cb = []
-            while len(cb) < k:
-                extra = list(cam_scenes)
-                rng.shuffle(extra)
-                cb.extend(extra)
-            scene_bags[c] = cb
-        rot["cam_bag"] = cam_bag
-        rot["scene_bags"] = scene_bags
-
-    def _draw_next(self, rot: dict[str, Any], transition: dict[str, Any],
-                   macro_index: dict[str, dict[str, Any]],
-                   rng: random.Random | Any = random) -> dict[str, Any] | None:
-        """Pick the next macro using a TWO-LEVEL model:
-
-          - Camera level (round-robin): each round visits every distinct camera
-            in the deck exactly once, in a freshly shuffled order, with the
-            first camera of a new round chosen so it never equals the on-air
-            camera. This GUARANTEES no two consecutive shots share a camera
-            (whenever the deck has ≥2 cameras), and gives every camera equal
-            airtime regardless of how many scenes it has.
-          - Scene level (per-camera shuffle): within the chosen camera, scenes
-            are dealt from that camera's own card-deck — each of its scenes once
-            before that camera reshuffles.
-
-        Draw order is COMMITTED (bags shuffled once on refill, then consumed
-        front-to-back), so the upcoming sequence is predictable for the live
-        Director view. With camera_alternate off, falls back to a flat
-        card-deck over all macros (camera may repeat).
-        """
-        deck = [mid for mid in (transition.get("deck") or []) if mid in macro_index]
-        if not deck:
-            return None
-        # deck_set guards committed bags against a SHRUNK deck: in dynamic mode
-        # the deck changes under a stable id, so a previously-committed scene may
-        # be a still-valid macro on the same camera yet no longer in the active
-        # deck. Filtering by membership drops it (and the bag rebuilds from the
-        # live deck). For static transitions the deck never changes ⇒ no-op.
-        deck_set = set(deck)
-
-        if not transition.get("camera_alternate", True):
-            bag = [mid for mid in (rot.get("flat_bag") or []) if mid in deck_set]
-            if not bag:
-                bag = list(deck)
-                rng.shuffle(bag)
-            choice = bag.pop(0)
-            rot["flat_bag"] = bag
-            macro = macro_index[choice]
-            rot["current_macro_id"] = choice
-            rot["current_camera"] = macro.get("camera")
-            return macro
-
-        cams = self._camera_order(deck, macro_index)
-        scene_bags: dict[Any, list[str]] = rot.get("scene_bags") or {}
-
-        # Pop the next camera (weighted round, committed order).
-        cam_bag = [c for c in (rot.get("cam_bag") or []) if c in cams]
-        if not cam_bag:
-            weights = self._camera_weights(transition, cams)
-            cam_bag = self._build_camera_round(weights, rot.get("current_camera"), rng)
-        cam = cam_bag.pop(0)
-
-        # Pop the next scene within that camera (committed per-camera deck).
-        bag = [mid for mid in (scene_bags.get(cam) or [])
-               if mid in deck_set and macro_index[mid].get("camera") == cam]
-        if not bag:
-            bag = [mid for mid in deck if macro_index[mid].get("camera") == cam]
-            rng.shuffle(bag)
-        if not bag:
-            return None  # camera has no scenes (shouldn't happen)
-        # Group alternation (best-effort): prefer a scene whose group differs
-        # from the on-air shot's group, so two same-subject shots (e.g. two
-        # piano angles on different cameras) don't run back to back. Picks the
-        # first non-matching scene in the committed order; falls back to the
-        # front when this camera only offers the same group.
-        pick_idx = 0
-        if transition.get("group_alternate", False):
-            prev = macro_index.get(rot.get("current_macro_id"))
-            prev_group = prev.get("group") if prev else None
-            if prev_group:
-                pick_idx = next(
-                    (j for j, mid in enumerate(bag)
-                     if (macro_index[mid].get("group") or None) != prev_group),
-                    0,
-                )
-        choice = bag.pop(pick_idx)
-        scene_bags[cam] = bag
-
-        rot["cam_bag"] = cam_bag
-        rot["scene_bags"] = scene_bags
-        macro = macro_index[choice]
-        rot["current_macro_id"] = choice
-        rot["current_camera"] = cam
-        # Commit the next round so the upcoming sequence stays exactly known.
-        self._commit_next_round(rot, transition, macro_index, rng)
-        return macro
-
-    def _predict(self, rot: dict[str, Any], transition: dict[str, Any],
-                 macro_index: dict[str, dict[str, Any]], n: int) -> list[dict[str, Any]]:
-        """Look ahead n shots WITHOUT mutating live state. Seeded from the
-        committed bag state so the result is stable across ticks (it only
-        shifts when a real shot fires). The immediate next shots are exact
-        (committed); shots beyond a bag refill are a representative sample."""
-        if not rot:
-            return []
-        seed = hash((
-            rot.get("current_macro_id"),
-            tuple(rot.get("cam_bag") or []),
-            tuple(sorted((str(k), tuple(v)) for k, v in (rot.get("scene_bags") or {}).items())),
-            tuple(rot.get("flat_bag") or []),
-        ))
-        rng = random.Random(seed)
-        sim = {
-            "cam_bag": list(rot.get("cam_bag") or []),
-            "scene_bags": {k: list(v) for k, v in (rot.get("scene_bags") or {}).items()},
-            "flat_bag": list(rot.get("flat_bag") or []),
-            "current_macro_id": rot.get("current_macro_id"),
-            "current_camera": rot.get("current_camera"),
-        }
-        out: list[dict[str, Any]] = []
-        for _ in range(n):
-            m = self._draw_next(sim, transition, macro_index, rng=rng)
-            if m is None:
-                break
-            out.append({"macro_id": m["id"], "name": m.get("name"),
-                        "camera": m.get("camera"), "group": m.get("group")})
-        return out
-
-    def preview_transition(self, transition: dict[str, Any],
-                           macro_index: dict[str, dict[str, Any]], n: int) -> list[dict[str, Any]]:
-        """A representative upcoming sequence for an idle transition (opening
-        shot first, then rotation). Seeded by transition id so reopening the
-        preview is stable."""
-        rng = random.Random(hash(("preview", transition.get("id"))))
-        rot: dict[str, Any] = {
-            "cam_bag": [], "scene_bags": {}, "flat_bag": [],
-            "current_macro_id": None, "current_camera": None,
-        }
-        out: list[dict[str, Any]] = []
-        m = self._draw_opening(rot, transition, macro_index, rng=rng)
-        while m is not None and len(out) < n:
-            out.append({"macro_id": m["id"], "name": m.get("name"),
-                        "camera": m.get("camera"), "group": m.get("group"),
-                        "opening": len(out) == 0})
-            m = self._draw_next(rot, transition, macro_index, rng=rng)
-        return out
-
-    def _tick_rotation(self, rule: dict[str, Any], transition: dict[str, Any],
-                       cfg: dict[str, Any], now: float, dry_run: bool,
-                       fired: list[dict[str, Any]]) -> None:
-        """Fire a macro ONLY when the on-air macro changes — i.e. once per draw
-        (rule activation / re-init, and each rotation interval). The current
-        macro's token is NOT periodically re-sent; a static transition
-        (interval_s=0) therefore fires exactly once and then holds."""
-        macro_index = self._macro_index(cfg)
-        rot = self._rotation
-        need_init = (
-            rot is None
-            or rot.get("rule_id") != rule["id"]
-            or rot.get("transition_id") != transition.get("id")
-        )
-
-        def schedule_next() -> None:
-            interval = self._interval(transition)
-            rot["next_at"] = (now + interval) if interval > 0 else float("inf")
-
-        if need_init:
-            self._rotation = rot = {
-                "rule_id": rule["id"],
-                "transition_id": transition.get("id"),
-                "cam_bag": [],       # camera round-robin queue
-                "scene_bags": {},    # camera -> remaining scene ids
-                "flat_bag": [],      # used only when camera_alternate is off
-                "current_macro_id": None,
-                "current_camera": None,
-                "next_at": now,
-            }
-            # Open on the transition's designated first screen (deck[0]).
-            macro = self._draw_opening(rot, transition, macro_index)
-            if macro is not None:
-                fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
-            schedule_next()
-            return
-
-        if now >= rot["next_at"]:
-            macro = self._draw_next(rot, transition, macro_index)
-            if macro is not None:
-                fired.append(self._fire_macro(rule, transition, macro, dry_run, now, "rotation"))
-            schedule_next()
-
-    # ── Internal: firing / dispatch ───────────────────────────────
-
-    def _fire(self, rule: dict[str, Any], action: dict[str, Any],
-              dry_run: bool, now: float, cause: str,
-              detail: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        cam_str = f" (cam{cam})" if cam not in (None, "") else ""
+        scene = (rule or {}).get("name") or "기본 장면"
         evt = {
             "ts": now,
             "wall_ts": time.time(),
-            "rule_id": rule["id"],
-            "rule_name": rule.get("name"),
-            "type": action["type"],
-            "detail": detail if detail is not None else self._action_detail(action),
+            "rule_id": (rule or {}).get("id"),
+            "rule_name": scene,
+            "type": "shot",
+            "detail": f"shot → {macro.get('name') or token}{cam_str} · {scene}",
             "dry_run": dry_run,
             "cause": cause,
             "dispatched": False,
             "dispatch_error": None,
+            "macro_id": macro.get("id"),
+            "macro_name": macro.get("name"),
+            "camera": cam,
+            "subjects": macro.get("subjects") or [],
+            "token": token,
         }
-        if extra:
-            evt.update(extra)
         if not dry_run:
             try:
-                evt["dispatched"] = self._dispatch(action) or False
+                evt["dispatched"] = self._dispatch(token) or False
             except Exception as e:
                 evt["dispatch_error"] = str(e)
         self._action_log.append(evt)
         return evt
 
-    def _fire_macro(self, rule: dict[str, Any], transition: dict[str, Any],
-                    macro: dict[str, Any], dry_run: bool, now: float, cause: str) -> dict[str, Any]:
-        token = str(macro.get("token") or "")
-        action = {"type": "http_request", "method": "", "url": "", "body": token}
-        cam = macro.get("camera")
-        cam_str = f" (cam{cam})" if cam not in (None, "") else ""
-        detail = f"macro → {macro.get('name') or token}{cam_str} · {transition.get('name', '')}"
-        return self._fire(rule, action, dry_run, now, cause, detail=detail, extra={
-            "macro_id": macro.get("id"),
-            "macro_name": macro.get("name"),
-            "camera": cam,
-            "transition_id": transition.get("id"),
-            "transition_name": transition.get("name"),
-            "token": token,
-        })
-
-    def _dispatch(self, action: dict[str, Any]) -> bool:
-        """Send the http_request action. Returns True if dispatched (fired on a
-        daemon thread; success means 'sent')."""
-        if action["type"] != "http_request":
-            return False
-        url = (action.get("url") or "").strip()
-        method = (action.get("method") or "").upper().strip()
-        if not url or not method:
-            ass = (self.config_store.snapshot()
-                   .get("connections", {})
-                   .get("ass_http", {}))
-            if not url:
-                url = (ass.get("url") or "").strip()
-            if not method:
-                method = (ass.get("method") or "POST").upper()
+    def _dispatch(self, token: str) -> bool:
+        """POST the shot's token to the ASS HTTP server. True means handed off
+        (it is fired on a daemon thread, so this is not a delivery receipt)."""
+        ass = (self.config_store.snapshot()
+               .get("connections", {})
+               .get("ass_http", {}))
+        url = (ass.get("url") or "").strip()
         if not url:
             return False
-        body = (action.get("body") or "").encode("utf-8") if method == "POST" else None
+        method = (ass.get("method") or "POST").upper()
+        body = token.encode("utf-8") if method == "POST" else None
         threading.Thread(
             target=self._do_http,
             args=(method, url, body),
@@ -959,33 +775,6 @@ class RuleEngine:
             name="http-dispatch",
         ).start()
         return True
-
-    def _next_action_preview(self, cfg: dict[str, Any], rule: dict[str, Any]) -> str:
-        """Short description of what this rule's first action would emit."""
-        actions = rule.get("actions") or []
-        if not actions:
-            return "(no actions)"
-        a = actions[0]
-        if a.get("type") == "transition":
-            t = self._resolve_transition(cfg, rule)
-            if t is None:
-                return "transition: (없음)"
-            n = len([m for m in (t.get("deck") or [])])
-            return f"transition: {t.get('name', '?')} · {n}장"
-        body = a.get("body") or ""
-        if len(body) > 40:
-            body = body[:38] + "…"
-        return f"HTTP body: {body}" if body else "HTTP (no body)"
-
-    @staticmethod
-    def _action_detail(action: dict[str, Any]) -> str:
-        if action.get("type") == "transition":
-            return f"transition → {action.get('transition_id', '')}"
-        url = action.get("url") or "(global)"
-        method = action.get("method") or "POST"
-        body = action.get("body") or ""
-        suffix = f" · {body}" if body else ""
-        return f"HTTP {method} → {url}{suffix}"
 
     @staticmethod
     def _do_http(method: str, url: str, body: bytes | None) -> None:
@@ -996,4 +785,4 @@ class RuleEngine:
             with urllib.request.urlopen(req, timeout=3) as resp:
                 resp.read(0)  # drain quickly; we don't care about the body
         except (urllib.error.URLError, OSError, ValueError) as e:
-            logger.warning("http_request failed: %s %s — %s", method, url, e)
+            logger.warning("shot dispatch failed: %s %s — %s", method, url, e)

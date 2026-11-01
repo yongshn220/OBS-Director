@@ -12,7 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .audio import AudioMonitor
-from .config import ConfigStore, ProjectNameError, new_macro_id, new_transition_id
+from .config import (DEFAULT_PACE, PACES, ConfigStore, ProjectNameError,
+                     default_profile, new_macro_id)
 from .groups import GroupEvaluator, rms_to_db
 from .rules import RuleEngine, default_rule, normalize_rule
 
@@ -21,7 +22,7 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 config_store = ConfigStore()
 audio = AudioMonitor(config_store)
 evaluator = GroupEvaluator(config_store)
-rule_engine = RuleEngine(config_store)
+rule_engine = RuleEngine(config_store, audio)
 clients: set[WebSocket] = set()
 
 
@@ -81,6 +82,7 @@ async def _broadcast_loop():
                     "auto": bool(rt.get("auto", True)),
                     "dry_run": bool(rt.get("dry_run", True)),
                     "director_mode": "dynamic" if rt.get("director_mode") == "dynamic" else "rules",
+                    "pace": rt.get("pace", DEFAULT_PACE),
                 },
                 "status": audio.status,
                 "engine": engine_out,
@@ -188,6 +190,7 @@ class ChannelPatch(BaseModel):
     role: str | None = None
     group: str | None = None
     threshold_db: float | None = None
+    beat_source: bool | None = None
 
 
 @app.patch("/api/channels/{channel_id}")
@@ -202,6 +205,9 @@ def patch_channel(channel_id: int, patch: ChannelPatch):
                 ch["name"] = patch.name
             if patch.threshold_db is not None:
                 ch["threshold_db"] = float(patch.threshold_db)
+            if patch.beat_source is not None:
+                ch["beat_source"] = bool(patch.beat_source)
+                audio.refresh_beat_channels()
             # Role sets the channel's group (hierarchical): a non-null role
             # derives group from that role, overriding any group in the patch.
             if "role" in patch.model_fields_set:
@@ -295,6 +301,41 @@ def upsert_role(name: str, body: RoleBody):
     return config_store.update(mutate)["roles"]
 
 
+class ReorderNamesBody(BaseModel):
+    order: list[str]
+
+
+def _reorder_map(data: dict, key: str, order: list[str]) -> dict:
+    """Rebuild a name-keyed dict in the given order.
+
+    Order is carried by the dict's own insertion order rather than an explicit
+    index field: it is the same thing, and an index would have to be kept
+    consistent on every add and delete. Names not listed keep their relative
+    position at the end, so a stale client cannot drop entries.
+    """
+    cur = data.get(key) or {}
+    seen, out = set(), {}
+    for n in order:
+        if n in cur and n not in seen:
+            seen.add(n)
+            out[n] = cur[n]
+    for n, v in cur.items():
+        if n not in seen:
+            out[n] = v
+    data[key] = out
+    return data
+
+
+@app.post("/api/roles/reorder")
+def reorder_roles(body: ReorderNamesBody):
+    return config_store.update(lambda d: _reorder_map(d, "roles", body.order))["roles"]
+
+
+@app.post("/api/groups/reorder")
+def reorder_groups(body: ReorderNamesBody):
+    return config_store.update(lambda d: _reorder_map(d, "groups", body.order))["groups"]
+
+
 @app.delete("/api/roles/{name}")
 def delete_role(name: str):
     def mutate(data):
@@ -313,18 +354,51 @@ def delete_role(name: str):
     return config_store.update(mutate)["roles"]
 
 
-# ── REST: macros ─────────────────────────────────────────────────────
-# A macro is a reference to an ASS macro: { id, name, token, camera }.
-# `token` is the payload POSTed to the ASS HTTP server to fire it; `camera`
-# is metadata the rotation engine uses to alternate physical cameras.
+# ── REST: cameras ────────────────────────────────────────────────────
+# The physical rig, stated outright so a camera can exist before any shot uses
+# it. Sent as a whole list, which covers add / rename / reorder / remove in one
+# call and keeps the client from having to diff.
+
+class CamerasBody(BaseModel):
+    cameras: list[str]
+
+
+@app.put("/api/cameras")
+def set_cameras(body: CamerasBody):
+    def mutate(data):
+        wanted, seen = [], set()
+        for c in body.cameras:
+            c = str(c).strip()
+            if c and c not in seen:
+                seen.add(c)
+                wanted.append(c)
+        # Removing a camera that shots still sit on would orphan them into a
+        # column that no longer renders, so refuse and say which ones.
+        in_use = {str(m["camera"]).strip() for m in data.get("macros", [])
+                  if m.get("camera") not in (None, "")}
+        orphaned = in_use - seen
+        if orphaned:
+            names = ", ".join(sorted(orphaned))
+            raise HTTPException(400, f"이 카메라를 쓰는 샷이 있습니다: {names}")
+        data["cameras"] = wanted
+        return data
+    return {"cameras": config_store.update(mutate)["cameras"]}
+
+
+# ── REST: shots (a.k.a. macros) ──────────────────────────────────────
+# A shot is a reference to an ASS macro: { id, name, token, camera, subject,
+# size }. `token` is the payload POSTed to the ASS HTTP server to fire it;
+# `camera` lets the planner avoid cutting a camera to itself; `subjects` lists
+# who it covers ("role:X" / "team:Y" / "WIDE"); `size` nudges how long it holds.
 
 class MacroBody(BaseModel):
     name: str | None = None
     token: str | None = None
     camera: str | int | None = None
-    group: str | None = None
-    # Audio groups whose live activity surfaces this shot in dynamic mode.
-    sources: list[str] | None = None
+    # Who this shot covers. A list: one shot can cover several people, and the
+    # assignment is edited from the subject's side, not the shot's.
+    subjects: list[str] | None = None
+    size: str | None = None
 
 
 @app.get("/api/macros")
@@ -339,8 +413,8 @@ def create_macro(body: MacroBody):
         "name": body.name or "",
         "token": body.token or "",
         "camera": body.camera,
-        "group": body.group,
-        "sources": body.sources or [],
+        "subjects": body.subjects or [],
+        "size": body.size,
     }
     def mutate(data):
         data.setdefault("macros", []).append(macro)
@@ -358,12 +432,12 @@ def update_macro(macro_id: str, body: MacroBody):
                     m["name"] = body.name
                 if body.token is not None:
                     m["token"] = body.token
-                if body.camera is not None or "camera" in body.model_fields_set:
+                if "camera" in body.model_fields_set:
                     m["camera"] = body.camera
-                if body.group is not None or "group" in body.model_fields_set:
-                    m["group"] = body.group
-                if body.sources is not None or "sources" in body.model_fields_set:
-                    m["sources"] = body.sources or []
+                if "subjects" in body.model_fields_set:
+                    m["subjects"] = body.subjects or []
+                if body.size is not None:
+                    m["size"] = body.size
                 return data
         raise HTTPException(404, f"macro {macro_id} not found")
     return config_store.update(mutate)
@@ -376,7 +450,7 @@ def delete_macro(macro_id: str):
         data["macros"] = [m for m in data.get("macros", []) if m["id"] != macro_id]
         if len(data["macros"]) == before:
             raise HTTPException(404, f"macro {macro_id} not found")
-        # _normalize_project strips this id from every transition deck;
+        # _normalize_profile drops this id from any scene that forced it;
         # also release a manual shot pin that pointed at it.
         rt = data.get("runtime") or {}
         if rt.get("override_macro_id") == macro_id:
@@ -385,91 +459,23 @@ def delete_macro(macro_id: str):
     return config_store.update(mutate)
 
 
-# ── REST: transitions ────────────────────────────────────────────────
-# A transition is a rotation policy: a deck of macro ids dealt one per
-# interval (card-deck), with optional camera-alternation.
-
-class TransitionBody(BaseModel):
-    name: str | None = None
-    deck: list[str] | None = None
-    interval_s: float | None = None
-    camera_alternate: bool | None = None
-    camera_weights: dict[str, int] | None = None
-    group_alternate: bool | None = None
-
-
-@app.get("/api/transitions")
-def list_transitions():
-    return config_store.get().get("transitions", [])
-
-
-@app.post("/api/transitions")
-def create_transition(body: TransitionBody):
-    transition = {
-        "id": new_transition_id(),
-        "name": body.name or "",
-        "deck": body.deck or [],
-        "interval_s": 8.0 if body.interval_s is None else body.interval_s,
-        "camera_alternate": True if body.camera_alternate is None else body.camera_alternate,
-        "camera_weights": body.camera_weights or {},
-        "group_alternate": bool(body.group_alternate),
-    }
-    def mutate(data):
-        data.setdefault("transitions", []).append(transition)
-        return data
-    cfg = config_store.update(mutate)
-    return next((t for t in cfg["transitions"] if t["id"] == transition["id"]), transition)
-
-
-@app.put("/api/transitions/{transition_id}")
-def update_transition(transition_id: str, body: TransitionBody):
-    def mutate(data):
-        for t in data.get("transitions", []):
-            if t["id"] == transition_id:
-                if body.name is not None:
-                    t["name"] = body.name
-                if body.deck is not None:
-                    t["deck"] = body.deck
-                if body.interval_s is not None:
-                    t["interval_s"] = body.interval_s
-                if body.camera_alternate is not None:
-                    t["camera_alternate"] = body.camera_alternate
-                if body.camera_weights is not None:
-                    t["camera_weights"] = body.camera_weights
-                if body.group_alternate is not None:
-                    t["group_alternate"] = body.group_alternate
-                return data
-        raise HTTPException(404, f"transition {transition_id} not found")
-    return config_store.update(mutate)
-
-
-@app.delete("/api/transitions/{transition_id}")
-def delete_transition(transition_id: str):
-    def mutate(data):
-        before = len(data.get("transitions", []))
-        data["transitions"] = [t for t in data.get("transitions", []) if t["id"] != transition_id]
-        if len(data["transitions"]) == before:
-            raise HTTPException(404, f"transition {transition_id} not found")
-        # _normalize_project prunes rule actions referencing this transition;
-        # also release a manual pin that pointed at it.
-        rt = data.get("runtime") or {}
-        if rt.get("override_transition_id") == transition_id:
-            rt["override_transition_id"] = None
-        return data
-    return config_store.update(mutate)
-
-
-@app.get("/api/transitions/{transition_id}/preview")
-def preview_transition(transition_id: str, n: int = 12):
-    """A representative upcoming shot sequence for the transition (opening shot
-    first, then rotation) — used by the Transitions tab preview strip."""
+@app.get("/api/scenes/{rule_id}/preview")
+def preview_scene(rule_id: str, n: int = 8):
+    """A representative shot sequence for a scene, run against the CURRENT
+    live activity — so the setup UI shows what this scene would actually do if
+    it opened right now, not a sequence read off a fixed list."""
     cfg = config_store.get()
-    t = next((t for t in cfg.get("transitions", []) if t["id"] == transition_id), None)
-    if t is None:
-        raise HTTPException(404, f"transition {transition_id} not found")
-    macro_index = {m["id"]: m for m in cfg.get("macros", []) if m.get("id")}
-    seq = rule_engine.preview_transition(t, macro_index, max(1, min(int(n), 50)))
-    return {"transition_id": transition_id, "sequence": seq}
+    if rule_id == "__default__":
+        profile = (cfg.get("runtime") or {}).get("profile") or default_profile()
+    else:
+        rule = next((r for r in cfg.get("rules", []) if r["id"] == rule_id), None)
+        if rule is None:
+            raise HTTPException(404, f"rule {rule_id} not found")
+        profile = rule.get("profile") or default_profile()
+    states = evaluator.evaluate(audio.get_levels())
+    activity = rule_engine.activity(states["groups"], states["roles"])
+    seq = rule_engine.preview_profile(cfg, profile, activity, max(1, min(int(n), 30)))
+    return {"rule_id": rule_id, "sequence": seq}
 
 
 # ── REST: rules ──────────────────────────────────────────────────────
@@ -520,14 +526,6 @@ class ReorderBody(BaseModel):
     order: list[str]  # list of rule_ids in desired top→bottom order (top = highest priority)
 
 
-@app.post("/api/rules/{rule_id}/run")
-def run_rule_manual(rule_id: str):
-    try:
-        return rule_engine.fire_manual(rule_id)
-    except KeyError:
-        raise HTTPException(404, f"rule {rule_id} not found")
-
-
 @app.post("/api/rules/reorder")
 def reorder_rules(body: ReorderBody):
     def mutate(data):
@@ -547,11 +545,13 @@ def reorder_rules(body: ReorderBody):
 class RuntimeBody(BaseModel):
     auto: bool | None = None
     dry_run: bool | None = None
-    # "rules" | "dynamic" — how the director chooses what to show.
+    # "rules" | "dynamic" — whether rules frame the scene, or the default
+    # profile shoots whatever is live regardless of them.
     director_mode: str | None = None
-    # Dynamic-mode knobs (rotation interval + same-subject anti-repeat).
-    dynamic_interval_s: float | None = None
-    dynamic_group_alternate: bool | None = None
+    # The one pacing control: "fast" | "normal" | "slow".
+    pace: str | None = None
+    # Partial patch of the default scene (see config.DEFAULT_PROFILE).
+    profile: dict[str, Any] | None = None
 
 
 @app.patch("/api/runtime")
@@ -564,32 +564,31 @@ def patch_runtime(body: RuntimeBody):
             rt["dry_run"] = bool(body.dry_run)
         if body.director_mode is not None:
             rt["director_mode"] = "dynamic" if body.director_mode == "dynamic" else "rules"
-        dyn = rt.setdefault("dynamic", {"interval_s": 8.0, "group_alternate": True})
-        if body.dynamic_interval_s is not None:
-            dyn["interval_s"] = max(0.5, float(body.dynamic_interval_s))
-        if body.dynamic_group_alternate is not None:
-            dyn["group_alternate"] = bool(body.dynamic_group_alternate)
+        if body.pace is not None:
+            rt["pace"] = body.pace if body.pace in PACES else DEFAULT_PACE
+        if body.profile is not None:
+            rt["profile"] = {**(rt.get("profile") or default_profile()), **body.profile}
         return data
     return config_store.update(mutate)["runtime"]
 
 
 # ── REST: manual overrides (operator pins) ───────────────────────────
-# At most one manual selection is active: a transition pin OR a shot pin.
-# Setting one clears the other; a null transition_id ("자동/룰") clears both.
+# At most one manual selection is active: a SCENE pin or a SHOT pin. Setting
+# one clears the other; a null rule_id ("자동/룰") clears both.
 
 class OverrideBody(BaseModel):
-    transition_id: str | None = None  # null = release back to rules
+    rule_id: str | None = None  # null = release back to rules
 
 
 @app.post("/api/override")
 def set_override(body: OverrideBody):
     def mutate(data):
         rt = data.setdefault("runtime", {})
-        tid = body.transition_id or None
-        if tid is not None and not any(t.get("id") == tid for t in data.get("transitions", [])):
-            raise HTTPException(400, f"unknown transition: {tid}")
-        rt["override_transition_id"] = tid
-        rt["override_macro_id"] = None   # picking a transition (or auto) drops any shot pin
+        rid = body.rule_id or None
+        if rid is not None and not any(r.get("id") == rid for r in data.get("rules", [])):
+            raise HTTPException(400, f"unknown rule: {rid}")
+        rt["override_rule_id"] = rid
+        rt["override_macro_id"] = None   # picking a scene (or auto) drops any shot pin
         return data
     return config_store.update(mutate)["runtime"]
 
@@ -607,7 +606,7 @@ def set_shot_override(body: ShotOverrideBody):
             raise HTTPException(400, f"unknown macro: {mid}")
         rt["override_macro_id"] = mid
         if mid is not None:
-            rt["override_transition_id"] = None   # taking a single shot drops the transition pin
+            rt["override_rule_id"] = None   # taking a single shot drops the scene pin
         return data
     return config_store.update(mutate)["runtime"]
 

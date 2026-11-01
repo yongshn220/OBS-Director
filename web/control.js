@@ -22,7 +22,15 @@ async function send(method, path, body) {
     await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   } catch (e) { /* next tick reflects real state */ }
 }
-const setOverride = (tid) => send('POST', '/api/override', { transition_id: tid });
+const setOverride = (rid) => send('POST', '/api/override', { rule_id: rid });
+
+// Subjects are "role:Piano" | "team:instruments" | "WIDE" (see backend/config.py).
+function subjectLabel(s) {
+  if (!s) return '미지정';
+  if (s === 'WIDE') return '전체 뷰';
+  const i = s.indexOf(':');
+  return i < 0 ? s : s.slice(i + 1);
+}
 const setShot = (mid) => send('POST', '/api/override/shot', { macro_id: mid });
 // NOTE: /api/runtime is PATCH-only — POST returns 405 (this was the "LIVE
 // button does nothing" bug). Overrides use POST; runtime uses PATCH.
@@ -38,22 +46,22 @@ async function loadConfig() {
 }
 
 function buildStatic() {
-  const transitions = S.cfg.transitions || [];
+  const scenes = S.cfg.rules || [];
   const macros = S.cfg.macros || [];
-  const sig = 'T:' + transitions.map(t => t.id).join(',') + '|M:' + macros.map(m => m.id).join(',');
+  const sig = 'S:' + scenes.map(r => r.id).join(',') + '|M:' + macros.map(m => m.id).join(',');
   if (sig === S.staticSig) return;   // no structural change → keep DOM (taps stay live)
   S.staticSig = sig;
 
-  // Transition pins
+  // Scene pins
   const pins = document.getElementById('c-pins');
   pins.innerHTML = '';
   const auto = document.createElement('button');
   auto.className = 'c-pin auto'; auto.dataset.pin = 'auto'; auto.textContent = '자동';
   pins.appendChild(auto);
-  transitions.forEach(t => {
+  scenes.forEach(r => {
     const b = document.createElement('button');
-    b.className = 'c-pin'; b.dataset.pin = t.id;
-    b.textContent = t.name || '(이름 없음)';
+    b.className = 'c-pin'; b.dataset.pin = r.id;
+    b.textContent = r.name || '(이름 없음)';
     pins.appendChild(b);
   });
 
@@ -80,7 +88,8 @@ function buildStatic() {
     byCam[c].forEach(m => {
       const b = document.createElement('button');
       b.className = 'c-shot'; b.dataset.shot = m.id; b.style.setProperty('--cam', color);
-      const sub = m.group ? `<div class="c-shot-sub">${esc(m.group)}</div>` : '';
+      const subs = (m.subjects || []).map(subjectLabel).join(' + ');
+      const sub = subs ? `<div class="c-shot-sub">${esc(subs)}</div>` : '';
       b.innerHTML = `<span>${esc(m.name || m.token || m.id)}</span>${sub}`;
       grid.appendChild(b);
     });
@@ -101,7 +110,7 @@ function onTick(msg) {
   const rt = msg.runtime || {};
   const eng = msg.engine || {};
   const d = eng.director || {};
-  const pinTrans = eng.override_transition_id || null;
+  const pinScene = eng.override_rule_id || null;
   const heldShot = eng.override_macro_id || null;
   const dynMode = (rt.director_mode || eng.director_mode) === 'dynamic';
 
@@ -112,21 +121,23 @@ function onTick(msg) {
 
   // NOW / NEXT
   const now = document.getElementById('c-now');
-  now.classList.toggle('dyn', dynMode && !pinTrans && !heldShot);
-  now.classList.toggle('pinned', !!pinTrans);
+  now.classList.toggle('dyn', dynMode && !pinScene && !heldShot);
+  now.classList.toggle('pinned', !!pinScene);
   now.classList.toggle('shot', !!heldShot);
 
   const badge = document.getElementById('c-now-badge');
   const modeEl = document.getElementById('c-now-mode');
   const cur = d.current || null;
-  const sources = d.active_sources || [];
+  const subjects = (d.active_subjects || []).map(subjectLabel);
 
   let badgeTxt = '○ 대기', badgeCls = '', modeTxt = '';
   if (heldShot) { badgeTxt = '🔴 수동 샷'; badgeCls = 'shot'; modeTxt = ''; }
-  else if (pinTrans) { badgeTxt = '🔒 고정'; badgeCls = 'pinned'; modeTxt = d.transition_name || ''; }
-  else if (cur && dynMode) { badgeTxt = '🟢 자동'; badgeCls = 'live'; modeTxt = sources.length ? sources.join(' + ') : '대기'; }
-  else if (cur) { badgeTxt = 'ON AIR'; badgeCls = 'live'; modeTxt = eng.active_rule_name || d.transition_name || ''; }
-  else if (dynMode) { badgeTxt = '🟢 자동 · 대기'; modeTxt = '활성 소스 없음'; }
+  else if (pinScene) { badgeTxt = '🔒 고정'; badgeCls = 'pinned'; modeTxt = d.scene_name || ''; }
+  else if (cur) {
+    badgeTxt = dynMode ? '🟢 자동' : 'ON AIR'; badgeCls = 'live';
+    modeTxt = [d.scene_name, subjects.length ? subjects.join(' + ') : null].filter(Boolean).join(' · ');
+  }
+  else { badgeTxt = dynMode ? '🟢 자동 · 대기' : '○ 대기'; modeTxt = '활성 소스 없음'; }
   badge.textContent = badgeTxt; badge.className = 'c-now-badge ' + badgeCls;
   modeEl.textContent = modeTxt;
 
@@ -140,7 +151,7 @@ function onTick(msg) {
   } else {
     shotEl.style.setProperty('--cam', 'var(--muted)');
     camEl.textContent = '—';
-    nameEl.textContent = dynMode ? '대기 (소리 없음)' : '대기 중';
+    nameEl.textContent = '대기 중';
   }
 
   // NEXT filmstrip + countdown
@@ -163,7 +174,7 @@ function onTick(msg) {
   // Pin / shot on-states
   document.querySelectorAll('#c-pins .c-pin').forEach(b => {
     const isAuto = b.dataset.pin === 'auto';
-    b.classList.toggle('on', isAuto ? (!pinTrans && !heldShot) : b.dataset.pin === pinTrans);
+    b.classList.toggle('on', isAuto ? (!pinScene && !heldShot) : b.dataset.pin === pinScene);
   });
   document.querySelectorAll('#c-shots .c-shot').forEach(b => {
     b.classList.toggle('on', b.dataset.shot === heldShot);

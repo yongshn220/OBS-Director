@@ -12,3 +12,6 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Pre-rewrite config snapshot (kept locally, not in git)
+.backup-premodel/

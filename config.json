@@ -16,14 +16,15 @@
   "runtime": {
     "auto": true,
     "dry_run": true,
-    "refire_s": 3.0,
-    "override_transition_id": null,
     "override_macro_id": null,
-    "director_mode": "dynamic",
-    "dynamic": {
-      "interval_s": 8.0,
-      "group_alternate": true
-    }
+    "director_mode": "rules",
+    "override_rule_id": null,
+    "profile": {
+      "who": [],
+      "cameras": [],
+      "hold_s": 3.0
+    },
+    "pace": "slow"
   },
   "current_project": "default"
 }

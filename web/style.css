@@ -213,17 +213,39 @@ select.inp { cursor: pointer; }
 input[type="range"] { accent-color: var(--blue); }
 
 /* Channels table */
-.chtbl-head, .chtbl-row { display: grid; grid-template-columns: 46px minmax(0,1fr) 150px 150px 176px 132px; gap: 12px; align-items: center; }
+.chtbl-head, .chtbl-row { display: grid; grid-template-columns: 46px minmax(0,1fr) 130px 130px 38px 320px; gap: 12px; align-items: center; }
 .chtbl-head { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--mut3); padding-bottom: 8px; }
 .chtbl-row { padding: 6px 0; border-top: 1px solid var(--bd-row); }
 .chtbl-row.unassigned { opacity: .55; }
 .chtbl-ch { font-family: var(--mono); font-size: 11px; color: var(--mut); }
-.thr-cell { display: flex; align-items: center; gap: 8px; }
-.thr-val { font-family: var(--mono); font-size: 11px; color: var(--mut); width: 48px; text-align: right; }
-.live-cell { display: flex; align-items: center; gap: 8px; }
-.live-bar { flex: 1; height: 4px; background: var(--bd-hair); border-radius: 2px; overflow: hidden; display: block; }
-.live-bar > span { display: block; height: 100%; width: 0; background: var(--bd-strong); transition: width .1s; }
-.live-db { font-family: var(--mono); font-size: 11px; color: var(--mut3); width: 46px; text-align: right; }
+/* Calibration cell: the live meter and the threshold slider sit on ONE −78..0
+   scale, stacked. The tick on the meter is the authoritative threshold mark —
+   you drag until it clears the noise floor, no arithmetic required. */
+.cal-cell { display: flex; flex-direction: column; gap: 3px; }
+.cal-top { display: flex; align-items: center; gap: 7px; }
+.cal-meter { position: relative; flex: 1; height: 7px; background: #14181d; border-radius: 2px; overflow: hidden; }
+.cal-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #39414c; border-radius: 2px; transition: width .08s linear; }
+.cal-thr { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #e8e2d0; opacity: .85; margin-left: -1px; }
+.cal-db { font-family: var(--mono); font-size: 10.5px; color: var(--mut3); width: 42px; text-align: right; }
+.cal-over { font-family: var(--mono); font-size: 10px; color: transparent; width: 30px; text-align: right; }
+.cal-over.on { color: var(--green); }
+.cal-over.loud { color: #d8a52a; }          /* +20 dB over while idle = noise, not signal */
+.cal-bot { display: flex; align-items: center; gap: 7px; }
+.cal-slider { flex: 1; height: 12px; }
+.cal-thrval { font-family: var(--mono); font-size: 10.5px; color: var(--mut); width: 72px; text-align: right; }
+
+/* Live activity strip — shown where conditions are authored */
+.livestrip { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--bd); border-radius: 8px; background: var(--card2); }
+.ls-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.ls-pill { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--mut3); border: 1px solid #2b313a; border-radius: 999px; padding: 2px 9px; }
+.ls-pill.on { color: var(--tx); border-color: var(--pc); background: color-mix(in srgb, var(--pc) 12%, transparent); }
+.ls-dot { width: 6px; height: 6px; border-radius: 50%; background: #2b313a; }
+.ls-pill.on .ls-dot { background: var(--pc); }
+/* A condition pill dims until it actually holds right now. */
+.cond { display: inline-flex; align-items: center; gap: 5px; opacity: .5; }
+.cond.holds { opacity: 1; }
+.cond-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .35; }
+.cond.holds .cond-dot { opacity: 1; }
 
 /* Teams grid */
 .teams-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
@@ -248,14 +270,82 @@ input[type="range"] { accent-color: var(--blue); }
 .mini-btn.danger:hover { border-color: var(--live); color: var(--danger); }
 .hint { font-size: 11px; color: var(--mut4); line-height: 1.5; }
 
-/* Macros table */
-.mac-head, .mac-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) 76px 120px minmax(0,1.2fr) 40px; gap: 12px; align-items: center; }
-.mac-head { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--mut3); padding-bottom: 8px; }
-.mac-row { padding: 6px 0; border-top: 1px solid var(--bd-row); }
-.mac-cam { font-family: var(--mono); font-size: 11px; text-align: center; }
-.mac-srcs { display: flex; flex-wrap: wrap; gap: 4px; }
-.src-chip { font-family: var(--mono); font-size: 10px; border: 1px solid #2b313a; border-radius: 999px; padding: 2px 8px; color: var(--mut); cursor: pointer; background: transparent; }
-.src-chip.on { color: #06121a; font-weight: 700; }
+/* Shot library (03) — a shot is defined here, independent of who it covers. */
+.shotlib-head, .shotlib-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) 70px 110px minmax(0,1.3fr) 34px; gap: 12px; align-items: center; }
+.shotlib-head { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--mut3); padding-bottom: 8px; }
+.shotlib-row { padding: 6px 0; border-top: 1px solid var(--bd-row); }
+.shotlib-row.incomplete { background: rgba(216,165,42,.045); }
+.inp.warn { border-color: #6a5c38; }
+.shot-asg { display: flex; flex-wrap: wrap; gap: 4px; }
+.asg-chip { font-size: 10.5px; color: var(--tx-dim); border: 1px solid #2b313a; border-left: 3px solid var(--sc, var(--mut3)); border-radius: 4px; padding: 2px 7px; }
+.asg-none { font-family: var(--mono); font-size: 10px; color: #a8801f; background: transparent; border: 1px dashed #4a4128; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
+.asg-none:hover { color: #d8a52a; border-color: #6a5c38; }
+
+/* Assign grid (04) — rows are subjects, columns are cameras. A hole in the grid
+   is a person no camera can cover, which is the whole point of this layout. */
+.shotmap { display: grid; gap: 1px; background: var(--bd-row); border: 1px solid var(--bd-row); border-radius: 8px; overflow: hidden; }
+.shotmap > * { background: var(--card); }
+.sm-corner { font-family: var(--mono); font-size: 9px; letter-spacing: .5px; color: var(--mut3); padding: 9px 12px; background: var(--card2); }
+.sm-camhd { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--cam, var(--mut)); padding: 9px 12px; background: var(--card2); border-bottom: 2px solid var(--cam, transparent); }
+.sm-camn { font-size: 9px; font-weight: 400; color: var(--mut4); }
+.sm-camx { border: none; background: transparent; color: var(--mut4); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; opacity: 0; }
+.sm-camhd:hover .sm-camx { opacity: 1; }
+.sm-camx:hover { color: var(--danger); }
+.sm-sub { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--card2); min-height: 46px; }
+.sm-sub.in { padding-left: 26px; }
+.sm-sub.wide { background: #171b21; }
+.sm-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sc, var(--mut3)); flex: none; }
+.sm-subname { font-size: 12.5px; color: var(--tx-dim); }
+.sm-sub.wide .sm-subname { font-weight: 600; color: var(--tx); }
+.sm-subkind { font-family: var(--mono); font-size: 9px; color: var(--mut4); margin-left: auto; text-align: right; }
+.sm-sub.miss .sm-subname { color: var(--mut3); }
+.sm-sub.miss .sm-subkind { color: #a8801f; }
+.sm-cell { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px; min-height: 46px; }
+.sm-shot { position: relative; display: flex; align-items: center; gap: 5px; flex: 1 1 100%; border-left: 3px solid var(--cam, var(--mut3)); border-radius: 4px; background: #191d23; padding: 4px 4px 4px 6px; }
+.sm-tokname { flex: 1; min-width: 0; color: var(--tx-dim); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-size { border: 1px solid #2b313a; background: transparent; border-radius: 3px; color: var(--mut2); font-family: var(--mono); font-size: 9px; width: 17px; height: 17px; cursor: pointer; flex: none; }
+.sm-size:hover { color: var(--tx); border-color: var(--mut2); }
+.sm-size.ro { cursor: default; }
+.sm-x { border: none; background: transparent; color: var(--mut4); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; flex: none; opacity: 0; }
+.sm-shot:hover .sm-x, .pick-chip:hover .sm-x { opacity: 1; }
+.sm-x:hover { color: var(--danger); }
+.sm-add-sel { flex: 1 1 100%; border: 1px dashed #2b313a; background: transparent; border-radius: 4px; color: var(--mut4); font-family: var(--mono); font-size: 10px; padding: 3px 4px; cursor: pointer; min-height: 24px; }
+.sm-add-sel:hover:not(:disabled) { border-color: var(--mut2); color: var(--tx-dim); }
+.sm-add-sel:disabled { opacity: .25; cursor: default; }
+/* Once a cell holds a shot the "assign another angle" control stops earning
+   its row height — park it in the corner and reveal it on hover. */
+.sm-cell:has(.sm-shot) .sm-add-sel { position: absolute; right: 4px; bottom: 2px; flex: none; width: 82px; min-height: 15px; padding: 0 2px; font-size: 9px; opacity: 0; }
+.sm-cell:hover .sm-add-sel { opacity: 1; }
+.sm-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px; font-family: var(--mono); font-size: 10px; color: var(--mut3); }
+.sm-warn { color: #d8a52a; }
+
+/* Scene profile editor — shared by every scene and by the default scene */
+.prof { display: flex; flex-direction: column; gap: 14px; }
+.mode-row { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 8px; }
+.mode-btn { display: flex; flex-direction: column; gap: 3px; text-align: left; border: 1px solid #2b313a; background: transparent; border-radius: 7px; padding: 9px 11px; cursor: pointer; }
+.mode-btn:hover { border-color: var(--mut2); }
+.mode-btn.on { border-color: rgba(61,220,151,.5); background: rgba(61,220,151,.09); }
+.mode-name { font-size: 12.5px; color: var(--tx-dim); font-weight: 500; }
+.mode-btn.on .mode-name { color: var(--green); }
+.mode-note { font-size: 10px; color: var(--mut4); line-height: 1.4; }
+.shotpick-chosen { display: flex; flex-wrap: wrap; gap: 5px; min-height: 26px; align-items: center; }
+.pick-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #2b313a; border-left: 3px solid var(--cam, var(--mut3)); border-radius: 5px; padding: 4px 5px 4px 8px; font-size: 11.5px; color: var(--tx-dim); }
+.pick-idx { font-family: var(--mono); font-size: 9px; color: var(--mut3); background: #14181d; border-radius: 3px; padding: 1px 4px; }
+.pick-cam { font-family: var(--mono); font-size: 9px; color: var(--cam, var(--mut3)); }
+.pick-mv { border: none; background: transparent; color: var(--mut3); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 1px; }
+.pick-mv:hover { color: var(--tx); }
+.prof-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
+.prof-checks { display: flex; gap: 22px; flex-wrap: wrap; }
+.prof-excl { display: flex; flex-direction: column; gap: 7px; }
+.prof .dim, .prof-grid.dim, .prof-checks.dim, .prof-excl.dim { opacity: .35; pointer-events: none; }
+.chk { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--tx-dim); cursor: pointer; }
+.chk .hint { margin-left: 2px; }
+.defscene { margin-top: 18px; border: 1px solid var(--bd); border-radius: 10px; background: var(--card2); padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.scene-prev { display: flex; gap: 6px; flex-wrap: wrap; }
+.prev-chip { display: flex; align-items: center; gap: 7px; border: 1px solid #2b313a; border-left: 3px solid var(--cam, var(--mut3)); border-radius: 5px; padding: 5px 9px; font-size: 11.5px; color: var(--tx-dim); }
+.prev-cam { font-family: var(--mono); font-size: 9px; color: var(--cam, var(--mut)); }
+.prev-sub { font-size: 10px; color: var(--mut4); }
+.modal.wide { width: 860px; }
 
 /* Rules */
 .rules-note { font-family: var(--mono); font-size: 10px; color: var(--mut2); margin-bottom: 8px; }
@@ -295,7 +385,9 @@ input[type="range"] { accent-color: var(--blue); }
 .cyc.sm { padding: 5px 11px; font-size: 10px; }
 .cyc.on  { color: var(--green); border-color: rgba(61,220,151,.45); background: rgba(61,220,151,.10); }
 .cyc.off { color: var(--danger); border-color: rgba(201,68,47,.5); background: rgba(201,68,47,.10); }
-.grid-2 { display: grid; grid-template-columns: minmax(0,1fr) 150px; gap: 14px; align-items: end; }
+/* start, not end: the right-hand field may carry a hint line, and bottom
+   alignment would then push the left field's label out of the header row. */
+.grid-2 { display: grid; grid-template-columns: minmax(0,1fr) 150px; gap: 14px; align-items: start; }
 
 /* ── Audio-loss alarm ──────────────────────────────────── */
 .audio-alarm { background: var(--live); color: #fff; font-weight: 700; font-size: 14px; text-align: center; padding: 11px 16px; animation: alarm-pulse 1s ease-in-out infinite; }
@@ -307,3 +399,47 @@ input[type="range"] { accent-color: var(--blue); }
 .pm-item:hover { background: var(--card2); }
 .pm-item.active { color: var(--green); }
 .pm-hd { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--mut3); padding: 6px 10px 4px; }
+
+/* Pace + beat lock in the header */
+.hdr-beat { font-family: var(--mono); font-size: 10px; color: var(--mut3); min-width: 60px; }
+.hdr-beat.on { color: var(--green); }
+.beat-chk { accent-color: var(--green); }
+/* A subject nothing can shoot is offered greyed out rather than hidden — the
+   gap is the useful information, and hiding it just makes it puzzling. */
+/* Coverage is stated on the pill, not implied by dimming: a SELECTED subject
+   with no shot is a setup mistake, and "faded green" read as decoration. */
+.cyc { position: relative; }
+.cyc.nocov { border-style: dashed; }
+.cyc-tag { font-size: 8.5px; color: #d8a52a; margin-left: 6px; letter-spacing: 0; }
+.cyc.on.nocov { border-color: #6a5c38; background: rgba(216,165,42,.10); color: #d8a52a; }
+
+/* WHO picker, grouped by team */
+.who-bands { display: flex; flex-direction: column; gap: 10px; }
+.who-band { display: flex; flex-direction: column; gap: 5px; }
+.who-band-hd { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--mut3); }
+
+/* Scene preview */
+.scene-prev-strip { display: flex; gap: 6px; flex-wrap: wrap; }
+.prev-idle { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+.prev-idle-lbl { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--mut3); }
+.prev-idle-chip { font-size: 10.5px; color: var(--mut2); border: 1px solid #2b313a; border-radius: 999px; padding: 1px 8px; }
+
+/* WHO rows: a subject and, once selected, the cameras allowed to shoot it */
+.who-row { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.who-item { display: inline-flex; align-items: center; gap: 5px; }
+.who-cams { display: inline-flex; align-items: center; gap: 3px; }
+.who-cam { min-width: 20px; height: 20px; padding: 0 5px; border: 1px solid #2b313a; background: transparent; border-radius: 4px; font-family: var(--mono); font-size: 9.5px; color: var(--mut3); cursor: pointer; }
+.who-cam:hover { border-color: var(--mut2); color: var(--tx-dim); }
+.who-cam.on { color: var(--cam); border-color: var(--cam); background: color-mix(in srgb, var(--cam) 14%, transparent); }
+/* "all cameras" is the default, so show it as available rather than chosen —
+   otherwise it looks identical to having deliberately picked every camera. */
+.who-cam.on.all { opacity: .55; }
+.who-cam.clr { color: var(--mut2); border-style: dashed; }
+.who-cam.big { min-width: 64px; height: 28px; font-size: 10.5px; letter-spacing: .5px; border-radius: 6px; }
+
+/* Assign grid: reorder arrows — row order seeds the rotation */
+.sm-move { display: inline-flex; flex-direction: column; gap: 1px; flex: none; width: 13px; }
+.sm-move.ph { visibility: hidden; }
+.sm-move button { border: none; background: transparent; color: var(--mut3); cursor: pointer; font-size: 7px; line-height: 1; padding: 1px 0; }
+.sm-move button:hover:not(:disabled) { color: var(--tx); }
+.sm-move button:disabled { opacity: .2; cursor: default; }
